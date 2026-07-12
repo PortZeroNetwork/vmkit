@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# vmkit — Parallels VM system-test control plane (macOS host).
+#
+# Encodes the operating discipline for testing real installers/agents on
+# pristine guest VMs: golden-snapshot ladders, one-VM-at-a-time, an
+# internal-disk-only boot policy with archive recovery, guarded guest
+# execution with straggler cleanup, and per-OS guest transport quirks.
+#
+#   vmkit doctor                     validate this host against the contract
+#   vmkit init-host                  write ~/.config/vmkit/host.conf template
+#   vmkit init                       write ./vmkit.conf repo-config template
+#   vmkit list                       VMs + snapshots
+#   vmkit up <platform|vm>           revert golden, boot, snapshot "<prefix>-ready"
+#   vmkit checkpoint <platform|vm> <name>   RUNNING snapshot "<prefix>-<name>"
+#   vmkit reset <platform|vm> [name=ready]  revert to running snapshot, wait ready
+#   vmkit run <platform|vm> <script> [args] run a repo script inside the guest
+#   vmkit exec <platform|vm> <cmd...>       raw command in the guest
+#   vmkit stop <platform|vm>                power off
+#   vmkit ensure-only <platform|vm>         stop every OTHER running VM
+#   vmkit test <platform> [flavor]   reset to built, run the flavor's script
+#   vmkit series <flavor> [platform] all platforms in series + summary
+#   vmkit adopt [platform]           clone archive VMs -> internal for missing ones
+#   vmkit sync [args]                mirror internal VM(s) to the archive drive
+#
+# Config:
+#   host: $VMKIT_HOST_CONF or ~/.config/vmkit/host.conf   (machine inventory)
+#   repo: ./vmkit.conf or ./vmtest/vmkit.conf, searched upward from $PWD
+# Both are shell-sourced. See templates/ for the documented formats.
+set -euo pipefail
+
+# --- locate our own lib/share dirs (dev checkout or brew libexec) ------------
+VMKIT_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -d "$VMKIT_BIN/../lib/vmkit" ]; then          # brew: bin/ + lib/vmkit/
+    VMKIT_LIB="$(cd "$VMKIT_BIN/../lib/vmkit" && pwd)"
+elif [ -d "$VMKIT_BIN/../lib" ]; then              # dev checkout: bin/ + lib/
+    VMKIT_LIB="$(cd "$VMKIT_BIN/../lib" && pwd)"
+else
+    echo "vmkit: cannot locate lib dir next to $VMKIT_BIN" >&2; exit 1
+fi
+VMKIT_SHARE="$(cd "$VMKIT_LIB/.." && pwd)"          # holds guest-lib/, templates/, docs/
+
+# shellcheck source=/dev/null
+. "$VMKIT_LIB/config.sh"
+# shellcheck source=/dev/null
+. "$VMKIT_LIB/core.sh"
+# shellcheck source=/dev/null
+. "$VMKIT_LIB/transport.sh"
+# shellcheck source=/dev/null
+. "$VMKIT_LIB/testing.sh"
+# shellcheck source=/dev/null
+. "$VMKIT_LIB/fleet.sh"
+# shellcheck source=/dev/null
+. "$VMKIT_LIB/doctor.sh"
+
+cmd="${1:-}"; [ $# -gt 0 ] && shift
+case "$cmd" in
+    doctor)      vmkit_load_host_conf; doctor_run "$@" ;;
+    init-host)   init_host_conf "$@" ;;
+    init)        vmkit_load_host_conf; init_repo_conf "$@" ;;
+    list)        vmkit_load_host_conf; cmd_list ;;
+    up)          vmkit_load_host_conf; cmd_up "$(resolve_vm_arg "$1")" ;;
+    checkpoint)  vmkit_load_host_conf; cmd_checkpoint "$(resolve_vm_arg "$1")" "$2" ;;
+    reset)       vmkit_load_host_conf; cmd_reset "$(resolve_vm_arg "$1")" "${2:-}" ;;
+    run)         vmkit_load_host_conf; vmkit_load_repo_conf; v="$(resolve_vm_arg "$1")"; shift; cmd_run "$v" "$@" ;;
+    exec)        vmkit_load_host_conf; v="$(resolve_vm_arg "$1")"; shift; prlctl exec "$v" "$@" ;;
+    stop)        vmkit_load_host_conf; prlctl stop "$(resolve_vm_arg "$1")" --fast 2>&1 | tail -1 ;;
+    ensure-only) vmkit_load_host_conf; ensure_only "$(resolve_vm_arg "$1")" ;;
+    test)        vmkit_load_host_conf; vmkit_load_repo_conf; cmd_test "$@" ;;
+    series)      vmkit_load_host_conf; vmkit_load_repo_conf; cmd_series "$@" ;;
+    adopt)       vmkit_load_host_conf; cmd_adopt "$@" ;;
+    sync)        vmkit_load_host_conf; cmd_sync "$@" ;;
+    guest-lib)   echo "$VMKIT_SHARE/guest-lib" ;;
+    version|--version) cat "$VMKIT_SHARE/VERSION" 2>/dev/null || echo dev ;;
+    *)
+        sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        exit 2
+        ;;
+esac

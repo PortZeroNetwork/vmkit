@@ -1,0 +1,14 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: bash -n
+        run: bash -n bin/vmkit lib/*.sh
+      - name: shellcheck
+        run: shellcheck -S warning bin/vmkit lib/*.sh guest-lib/assert.sh
