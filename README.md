@@ -41,6 +41,11 @@ vmkit test linux smoke   # reset to "built", run one flavor on one platform
 vmkit series lifecycle   # every configured platform in series + summary
 ```
 
+Run `vmkit init-agents` to seed `AGENTS.md`/`CLAUDE.md` with an include
+pointing at `.rules/vmkit.md`, a generated file explaining vmkit's role in
+the repo — VM inventory, snapshot ladder, test flavors, and archive drive —
+so AI coding agents working in the repo pick up the same context.
+
 Flavor scripts live in your repo, run *inside* the guests, and speak a tiny
 greppable protocol (`PHASE=… ok=true|false|SKIP`, final `RESULT=PASS|FAIL|SKIP`).
 Copy the helpers from `$(vmkit guest-lib)/assert.sh|.ps1` into your repo's
