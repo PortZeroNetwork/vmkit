@@ -84,10 +84,19 @@ resolve_vm_arg() { # <platform|vm-name>
 # Legacy escape hatch: Parallels cannot rename snapshots, so hosts with
 # pre-vmkit snapshot names can override per VM+logical in host.conf:
 #     VMKIT_VM_MACOS_SNAP_GOLDEN="MacOS 15.7.7"
+#
+# Logical names may contain hyphens (provision preserves as e.g.
+# "built-pre-defender", "pre-brew"). Those are not valid in bash variable
+# names, so for the override-key lookup hyphens become underscores
+# (VMKIT_VM_WINDOWS_SNAP_BUILT_PRE_DEFENDER). The actual snapshot name still
+# uses the original logical string with hyphens.
 resolve_snap() { # <vm> <logical>
-    local p override_key
+    local p override_key logical_key
     if p="$(vm_os "$1" 2>/dev/null)"; then
-        override_key="VMKIT_VM_$(echo "$p" | tr '[:lower:]' '[:upper:]')_SNAP_$(echo "$2" | tr '[:lower:]' '[:upper:]')"
+        # Uppercase + map non-identifier chars to _ so hyphenated logical names
+        # (built-pre-defender, pre-brew) don't blow up ${!override_key}.
+        logical_key="$(printf '%s' "$2" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9_' '_')"
+        override_key="VMKIT_VM_$(printf '%s' "$p" | tr '[:lower:]' '[:upper:]')_SNAP_${logical_key}"
         if [ -n "${!override_key:-}" ]; then
             printf '%s' "${!override_key}"; return 0
         fi
