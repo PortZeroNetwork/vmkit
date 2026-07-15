@@ -20,6 +20,8 @@
 #   vmkit ensure-only <platform|vm>         stop every OTHER running VM
 #   vmkit test <platform> [flavor]   reset to built, run the flavor's script
 #   vmkit series <flavor> [platform] all platforms in series + summary
+#   vmkit provision <platform|vm> <script> [opts]  bake one-time guest config
+#                                    into a checkpoint (reset->run->re-checkpoint)
 #   vmkit screenshot <platform|vm> [file]   capture VM desktop PNG (host-side)
 #   vmkit key <platform|vm> <spec...>       send key / combo (host-side)
 #   vmkit type <platform|vm> <text...>      type ASCII text (host-side)
@@ -60,6 +62,8 @@ VMKIT_SHARE="$(cd "$VMKIT_LIB/.." && pwd)"          # holds guest-lib/, template
 . "$VMKIT_LIB/doctor.sh"
 # shellcheck source=/dev/null
 . "$VMKIT_LIB/agents.sh"
+# shellcheck source=/dev/null
+. "$VMKIT_LIB/provision.sh"
 
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 case "$cmd" in
@@ -77,6 +81,9 @@ case "$cmd" in
     ensure-only) vmkit_load_host_conf; ensure_only "$(resolve_vm_arg "$1")" ;;
     test)        vmkit_load_host_conf; vmkit_load_repo_conf; cmd_test "$@" ;;
     series)      vmkit_load_host_conf; vmkit_load_repo_conf; cmd_series "$@" ;;
+    provision)   [ $# -ge 2 ] || { echo "usage: vmkit provision <platform|vm> <script> [--checkpoint name] [--label label] [--preserve-as name] [--no-preserve] [--anchor name] [--timeout secs] [-- args...]" >&2; exit 2; }
+                 vmkit_load_host_conf; vmkit_load_repo_conf
+                 v="$(resolve_vm_arg "$1")"; shift; cmd_provision "$v" "$@" ;;
     screenshot|capture)
                  [ $# -ge 1 ] || { echo "usage: vmkit screenshot <platform|vm> [file.png]" >&2; exit 2; }
                  vmkit_load_host_conf
@@ -96,7 +103,7 @@ case "$cmd" in
     guest-lib)   echo "$VMKIT_SHARE/guest-lib" ;;
     version|--version) cat "$VMKIT_SHARE/VERSION" 2>/dev/null || echo dev ;;
     *)
-        sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,35p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         exit 2
         ;;
 esac

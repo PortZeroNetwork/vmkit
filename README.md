@@ -41,6 +41,23 @@ vmkit test linux smoke   # reset to "built", run one flavor on one platform
 vmkit series lifecycle   # every configured platform in series + summary
 ```
 
+### One-time guest provisioning
+
+Some guest config must **survive** the per-test reset — a toolchain, Homebrew,
+a Windows Defender exclusion for unsigned/network-sourced installers. It can't
+live in a flavor script (every test reverts to `built` first); it has to be
+baked into the checkpoint itself. `vmkit provision` is that
+reset → run-a-guest-script → re-checkpoint dance as one reusable primitive,
+with "preserve the pristine baseline once" built in:
+
+```sh
+vmkit provision windows vmtest/scripts/windows-add-defender-exclusions.ps1 \
+    --checkpoint built --label defender    # bakes the exclusion into "built"
+```
+
+See [docs/PROVISIONING.md](docs/PROVISIONING.md) for the full model (anchors,
+preservation, failure handling).
+
 ### Host-side desktop control (agent / manual UI)
 
 Drive a running guest's interactive desktop from the host (no guest agent):
@@ -89,3 +106,4 @@ the full pristine-machine suite.
   bootstrap (including Apple Silicon arch migration)
 - [CAPABILITIES.md](docs/CAPABILITIES.md) — what guest scripts can/can't do per OS
 - [FAILURES.md](docs/FAILURES.md) — failure catalog: every known failure class → its guard
+- [PROVISIONING.md](docs/PROVISIONING.md) — bake one-time guest OS config into a checkpoint (`vmkit provision`)
