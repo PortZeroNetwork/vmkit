@@ -41,10 +41,11 @@ vmkit test linux smoke   # reset to "built", run one flavor on one platform
 vmkit series lifecycle   # every configured platform in series + summary
 ```
 
-Run `vmkit init-agents` to seed `AGENTS.md`/`CLAUDE.md` with an include
-pointing at `.rules/vmkit.md`, a generated file explaining vmkit's role in
-the repo — VM inventory, snapshot ladder, test flavors, and archive drive —
-so AI coding agents working in the repo pick up the same context.
+Run `vmkit init-agents` to generate `.instructions/vmkit.md` (VM inventory,
+snapshot ladder, test flavors, archive drive) and wire it the same way
+[agent-toolbox instruction modules](https://github.com/portzeronetwork/agent-toolbox)
+do: one `@.instructions/vmkit.md` line in `AGENTS.md`, and `CLAUDE.md` as a
+thin `@AGENTS.md` pointer. No marker blocks in the root agent files.
 
 Flavor scripts live in your repo, run *inside* the guests, and speak a tiny
 greppable protocol (`PHASE=… ok=true|false|SKIP`, final `RESULT=PASS|FAIL|SKIP`).

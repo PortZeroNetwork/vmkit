@@ -1,8 +1,23 @@
 # shellcheck shell=bash
-# vmkit init-agents: seed AGENTS.md / CLAUDE.md with an include pointing at
-# .rules/vmkit.md, and generate that file so AI coding agents working in a
-# vmkit-tested repo know the VM inventory, snapshot ladder, and test flavors
-# without having to reverse-engineer vmkit.conf/host.conf themselves.
+# vmkit init-agents: generate a project-local instruction module and wire it
+# into AGENTS.md / CLAUDE.md the same way agent-toolbox manages modules
+# (see agent-toolbox/instructions/README.md):
+#
+#   1. Write a standalone file: .instructions/vmkit.md (generated from this
+#      machine's host.conf + this repo's vmkit.conf — not a library copy).
+#   2. Ensure one exact include line in AGENTS.md: @.instructions/vmkit.md
+#   3. Ensure CLAUDE.md has @AGENTS.md (preferred); do not put the module
+#      body or a second @.instructions/vmkit.md line there when the pointer
+#      is present (Claude expands nested @ imports via AGENTS.md).
+#
+# Disable is manual: delete .instructions/vmkit.md and remove the include
+# line from AGENTS.md. No HTML-comment markers, no root-file body upserts.
+
+VMKIT_INSTR_DIR=".instructions"
+VMKIT_INSTR_ID="vmkit"
+VMKIT_INSTR_FILE="${VMKIT_INSTR_DIR}/${VMKIT_INSTR_ID}.md"
+VMKIT_INSTR_INCLUDE="@${VMKIT_INSTR_DIR}/${VMKIT_INSTR_ID}.md"
+VMKIT_AGENTS_POINTER="@AGENTS.md"
 
 # Best-effort per-platform VM inventory line, read from host.conf. Silent if
 # the platform has no VM configured.
@@ -101,23 +116,15 @@ _agents_flavor_section() {
     )
 }
 
-init_agent_docs() {
-    local force="${1:-}"
-    mkdir -p .rules
-    if [ -f .rules/vmkit.md ] && [ "$force" != "--force" ]; then
-        echo "vmkit: .rules/vmkit.md already exists — leaving it as-is (use --force to regenerate)" >&2
-        _agents_ensure_include AGENTS.md "See [.rules/vmkit.md](.rules/vmkit.md) for how vmkit (Parallels VM system testing) is used in this repo."
-        _agents_ensure_include CLAUDE.md "@.rules/vmkit.md"
-        return
-    fi
-
+_agents_write_module() {
     local vm_section snap_section archive_section flavor_section
     vm_section="$(_agents_vm_section)"
     snap_section="$(_agents_snapshot_section)"
     archive_section="$(_agents_archive_section)"
     flavor_section="$(_agents_flavor_section)"
 
-    cat > .rules/vmkit.md <<EOF
+    mkdir -p "$VMKIT_INSTR_DIR"
+    cat > "$VMKIT_INSTR_FILE" <<EOF
 # vmkit in this repo
 
 This repo uses [vmkit](https://github.com/portzeronetwork/vmkit) — a
@@ -190,26 +197,129 @@ vmkit exec <platform> <cmd...>     # raw command in the guest
   capability matrix (what \`prlctl exec\` can/can't do per OS) before writing
   new guest-side logic.
 EOF
-    echo "wrote .rules/vmkit.md"
-
-    _agents_ensure_include AGENTS.md "See [.rules/vmkit.md](.rules/vmkit.md) for how vmkit (Parallels VM system testing) is used in this repo."
-    _agents_ensure_include CLAUDE.md "@.rules/vmkit.md"
+    echo "wrote $VMKIT_INSTR_FILE"
 }
 
-# Idempotently point an agent-instructions file at .rules/vmkit.md: create the
-# file with just that line if it doesn't exist, append if it exists and
-# doesn't already reference .rules/vmkit.md, otherwise leave it alone.
-_agents_ensure_include() { # <file> <line-to-add>
+# True when <file> has a line that is exactly <line>.
+_agents_has_exact_line() { # <file> <exact-line>
+    [ -f "$1" ] && grep -qxF "$2" "$1"
+}
+
+# Drop every line in <file> whose exact text matches any of the remaining args.
+# No-op if the file is missing or nothing matches.
+_agents_strip_lines() { # <file> <line> [<line>...]
+    local file="$1"; shift
+    [ -f "$file" ] || return 0
+    local tmp line candidate drop found=0
+    tmp="$(mktemp)"
+    while IFS= read -r line || [ -n "$line" ]; do
+        drop=0
+        for candidate in "$@"; do
+            if [ "$line" = "$candidate" ]; then
+                drop=1
+                found=1
+                break
+            fi
+        done
+        [ "$drop" -eq 1 ] || printf '%s\n' "$line" >> "$tmp"
+    done < "$file"
+    if [ "$found" -eq 1 ]; then
+        mv "$tmp" "$file"
+        echo "cleaned stale include lines from $file"
+    else
+        rm -f "$tmp"
+    fi
+}
+
+# Ensure <file> ends with a newline (no-op if empty or already terminated).
+# Uses if/then so a "already terminated" outcome is not a failing status under
+# set -e (a trailing `false && …` would abort the caller).
+_agents_ensure_trailing_newline() { # <file>
+    [ -s "$1" ] || return 0
+    if [ "$(tail -c1 "$1" | wc -l)" -eq 0 ]; then
+        printf '\n' >> "$1"
+    fi
+}
+
+# Idempotently append an exact include line. Creates the file when missing.
+# Matching is exact on a full line (same contract as agent-toolbox).
+_agents_ensure_exact_line() { # <file> <exact-line>
     local file="$1" line="$2"
     if [ ! -f "$file" ]; then
         printf '%s\n' "$line" > "$file"
         echo "wrote $file"
-        return
+        return 0
     fi
-    if grep -qF '.rules/vmkit.md' "$file"; then
-        echo "$file already references .rules/vmkit.md — left unchanged"
-        return
+    if _agents_has_exact_line "$file" "$line"; then
+        echo "$file already has $line — left unchanged"
+        return 0
     fi
-    { echo; printf '%s\n' "$line"; } >> "$file"
+    _agents_ensure_trailing_newline "$file"
+    # Blank line before the first @.instructions/ include when the file has body.
+    if [ -s "$file" ] && ! grep -qE '^@\.instructions/' "$file"; then
+        local last
+        last="$(tail -n1 "$file" 2>/dev/null || true)"
+        if [ -n "$last" ]; then
+            printf '\n' >> "$file"
+        fi
+    fi
+    printf '%s\n' "$line" >> "$file"
     echo "updated $file"
+}
+
+# Prefer CLAUDE.md -> @AGENTS.md. Strip any direct module include so Claude
+# does not double-load via nested @ imports.
+_agents_ensure_claude() {
+    if [ ! -f CLAUDE.md ]; then
+        printf '%s\n' "$VMKIT_AGENTS_POINTER" > CLAUDE.md
+        echo "wrote CLAUDE.md"
+    elif ! _agents_has_exact_line CLAUDE.md "$VMKIT_AGENTS_POINTER"; then
+        _agents_ensure_trailing_newline CLAUDE.md
+        if [ -s CLAUDE.md ]; then
+            local last
+            last="$(tail -n1 CLAUDE.md 2>/dev/null || true)"
+            if [ -n "$last" ]; then
+                printf '\n' >> CLAUDE.md
+            fi
+        fi
+        printf '%s\n' "$VMKIT_AGENTS_POINTER" >> CLAUDE.md
+        echo "updated CLAUDE.md"
+    else
+        echo "CLAUDE.md already has $VMKIT_AGENTS_POINTER — left unchanged"
+    fi
+    _agents_strip_lines CLAUDE.md \
+        "$VMKIT_INSTR_INCLUDE" \
+        "@.rules/vmkit.md"
+}
+
+# Drop pre-module layout leftovers: markdown link prose in AGENTS.md and the
+# old @.rules include, plus the orphan .rules/vmkit.md file if present.
+_agents_migrate_legacy() {
+    local legacy_agents_line
+    legacy_agents_line="See [.rules/vmkit.md](.rules/vmkit.md) for how vmkit (Parallels VM system testing) is used in this repo."
+    _agents_strip_lines AGENTS.md \
+        "$legacy_agents_line" \
+        "@.rules/vmkit.md"
+    _agents_strip_lines CLAUDE.md \
+        "@.rules/vmkit.md" \
+        "$legacy_agents_line"
+    if [ -f .rules/vmkit.md ]; then
+        rm -f .rules/vmkit.md
+        echo "removed legacy .rules/vmkit.md (now $VMKIT_INSTR_FILE)"
+        rmdir .rules 2>/dev/null || true
+    fi
+}
+
+init_agent_docs() {
+    local force="${1:-}"
+
+    if [ -f "$VMKIT_INSTR_FILE" ] && [ "$force" != "--force" ]; then
+        echo "vmkit: $VMKIT_INSTR_FILE already exists — leaving it as-is (use --force to regenerate)" >&2
+    else
+        _agents_write_module
+    fi
+
+    _agents_migrate_legacy
+    _agents_ensure_exact_line AGENTS.md "$VMKIT_INSTR_INCLUDE"
+    _agents_ensure_claude
 }

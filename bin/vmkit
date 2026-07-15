@@ -9,7 +9,7 @@
 #   vmkit doctor                     validate this host against the contract
 #   vmkit init-host                  write ~/.config/vmkit/host.conf template
 #   vmkit init                       write ./vmkit.conf repo-config template
-#   vmkit init-agents                seed AGENTS.md/CLAUDE.md + .rules/vmkit.md
+#   vmkit init-agents                seed .instructions/vmkit.md + @ includes
 #   vmkit list                       VMs + snapshots
 #   vmkit up <platform|vm>           revert golden, boot, snapshot "<prefix>-ready"
 #   vmkit checkpoint <platform|vm> <name>   RUNNING snapshot "<prefix>-<name>"
