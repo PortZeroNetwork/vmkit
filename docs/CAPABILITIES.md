@@ -70,3 +70,47 @@ fighting an OS limit.
   the command): always `$SUDO env VAR=val cmd`.
 - `prlctl exec` gives you `HOME=/` on Unix guests — set `HOME` explicitly for
   anything that reads dotfiles or state directories.
+
+## Host-side desktop control (no guest agent)
+
+vmkit can observe and drive the guest **interactive console** from the host
+using Parallels APIs only (`prlctl capture`, `prlctl send-key-event`). This is
+orthogonal to `prlctl exec` / flavor scripts.
+
+| Command | What it does | Limits |
+|---------|--------------|--------|
+| `vmkit screenshot <vm> [file]` | PNG of the VM framebuffer; path on stdout | Needs VM running |
+| `vmkit key <vm> <spec...>` | Named keys and combos (`enter`, `ctrl+c`, `win+r`, `code:36`) | US-layout key names |
+| `vmkit type <vm> <text...>` | Types printable US-ASCII (+ tab/newline) | No non-ASCII IME |
+| `vmkit mouse <vm> click\|…` | Left/right/middle click; wheel; relative `nudge` | **No absolute (x,y)** |
+
+Useful agent loop:
+
+```sh
+shot=$(vmkit screenshot windows)
+# inspect $shot (vision), then:
+vmkit key windows tab enter
+vmkit type windows "some text"
+```
+
+### What still needs a guest agent
+
+- **Absolute pointer** (`click-at x y`, move-to) — Parallels only exposes
+  relative move + buttons via the key table.
+- **Accessibility trees** (UIA / AX / AT-SPI) — hypervisor sees pixels, not
+  widget roles/names/bounds.
+- **Video recording** — no reliable host CLI; record host-side of the VM
+  window or stitch screenshots as a workaround.
+
+### Session context
+
+Desktop input goes to the **virtual console**, not into a headless
+SYSTEM/root `prlctl exec` session. For UI work, guests should use the
+auto-login interactive user from [HUMAN-SETUP.md](HUMAN-SETUP.md). Scripted
+system tests (`vmkit test` / `run` / `exec`) remain the headless path.
+
+Env knobs:
+
+- `VMKIT_SCREENSHOT_DIR` — default directory for auto-named screenshots
+  (`$TMPDIR/vmkit-screenshots` if unset).
+- `VMKIT_KEY_DELAY` — inter-key delay in ms (default `40`).

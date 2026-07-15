@@ -41,6 +41,21 @@ vmkit test linux smoke   # reset to "built", run one flavor on one platform
 vmkit series lifecycle   # every configured platform in series + summary
 ```
 
+### Host-side desktop control (agent / manual UI)
+
+Drive a running guest's interactive desktop from the host (no guest agent):
+
+```sh
+vmkit screenshot windows                 # PNG path printed on stdout
+vmkit key windows win+r                  # combos: ctrl+c, alt+tab, enter, …
+vmkit type windows "notepad"
+vmkit key windows enter
+vmkit mouse windows click                # buttons + relative nudge only
+```
+
+This is a vision loop substrate (screenshot → decide → key/type). Absolute
+click-at-(x,y) and accessibility trees need a guest agent (planned next).
+
 Run `vmkit init-agents` to generate `.instructions/vmkit.md` (VM inventory,
 snapshot ladder, test flavors, archive drive) and wire it the same way
 [agent-toolbox instruction modules](https://github.com/portzeronetwork/agent-toolbox)

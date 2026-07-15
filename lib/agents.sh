@@ -179,6 +179,10 @@ vmkit test <platform> <flavor>     # reset to "-built", run one flavor
 vmkit series <flavor>              # every configured platform + summary
 vmkit run <platform> <script>      # run a repo script inside the guest
 vmkit exec <platform> <cmd...>     # raw command in the guest
+vmkit screenshot <platform> [file] # PNG of the guest desktop (host-side)
+vmkit key <platform> <spec...>     # keys/combos: enter, tab, ctrl+c, win+r
+vmkit type <platform> <text...>    # type US-ASCII text into the guest
+vmkit mouse <platform> click|...   # click / wheel / relative nudge only
 \`\`\`
 
 ## Notes for AI agents working in this repo
@@ -196,6 +200,12 @@ vmkit exec <platform> <cmd...>     # raw command in the guest
 - See vmkit's own \`docs/CAPABILITIES.md\` (in the vmkit repo) for the guest
   capability matrix (what \`prlctl exec\` can/can't do per OS) before writing
   new guest-side logic.
+- **Host-side desktop control** (\`screenshot\` / \`key\` / \`type\` / \`mouse\`)
+  uses Parallels virtual input/display — no guest agent required. Typical
+  agent loop: screenshot → read PNG → key/type → screenshot. Absolute
+  click-at-(x,y) and accessibility trees need the guest agent (not yet
+  shipped). Mouse nudge is relative only. Prefer a logged-in interactive
+  desktop (auto-login), not headless SYSTEM/root exec context.
 EOF
     echo "wrote $VMKIT_INSTR_FILE"
 }

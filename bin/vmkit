@@ -20,6 +20,10 @@
 #   vmkit ensure-only <platform|vm>         stop every OTHER running VM
 #   vmkit test <platform> [flavor]   reset to built, run the flavor's script
 #   vmkit series <flavor> [platform] all platforms in series + summary
+#   vmkit screenshot <platform|vm> [file]   capture VM desktop PNG (host-side)
+#   vmkit key <platform|vm> <spec...>       send key / combo (host-side)
+#   vmkit type <platform|vm> <text...>      type ASCII text (host-side)
+#   vmkit mouse <platform|vm> <action...>   click / wheel / relative nudge
 #   vmkit adopt [platform]           clone archive VMs -> internal for missing ones
 #   vmkit sync [args]                mirror internal VM(s) to the archive drive
 #
@@ -49,6 +53,8 @@ VMKIT_SHARE="$(cd "$VMKIT_LIB/.." && pwd)"          # holds guest-lib/, template
 # shellcheck source=/dev/null
 . "$VMKIT_LIB/testing.sh"
 # shellcheck source=/dev/null
+. "$VMKIT_LIB/desktop.sh"
+# shellcheck source=/dev/null
 . "$VMKIT_LIB/fleet.sh"
 # shellcheck source=/dev/null
 . "$VMKIT_LIB/doctor.sh"
@@ -71,12 +77,26 @@ case "$cmd" in
     ensure-only) vmkit_load_host_conf; ensure_only "$(resolve_vm_arg "$1")" ;;
     test)        vmkit_load_host_conf; vmkit_load_repo_conf; cmd_test "$@" ;;
     series)      vmkit_load_host_conf; vmkit_load_repo_conf; cmd_series "$@" ;;
+    screenshot|capture)
+                 [ $# -ge 1 ] || { echo "usage: vmkit screenshot <platform|vm> [file.png]" >&2; exit 2; }
+                 vmkit_load_host_conf
+                 v="$(resolve_vm_arg "$1")"; shift
+                 cmd_screenshot "$v" "${1:-}" ;;
+    key)         [ $# -ge 1 ] || { echo "usage: vmkit key <platform|vm> <spec> [spec...]" >&2; exit 2; }
+                 vmkit_load_host_conf
+                 v="$(resolve_vm_arg "$1")"; shift; cmd_key "$v" "$@" ;;
+    type)        [ $# -ge 1 ] || { echo "usage: vmkit type <platform|vm> <text...>" >&2; exit 2; }
+                 vmkit_load_host_conf
+                 v="$(resolve_vm_arg "$1")"; shift; cmd_type "$v" "$@" ;;
+    mouse)       [ $# -ge 1 ] || { echo "usage: vmkit mouse <platform|vm> <action> [args...]" >&2; exit 2; }
+                 vmkit_load_host_conf
+                 v="$(resolve_vm_arg "$1")"; shift; cmd_mouse "$v" "$@" ;;
     adopt)       vmkit_load_host_conf; cmd_adopt "$@" ;;
     sync)        vmkit_load_host_conf; cmd_sync "$@" ;;
     guest-lib)   echo "$VMKIT_SHARE/guest-lib" ;;
     version|--version) cat "$VMKIT_SHARE/VERSION" 2>/dev/null || echo dev ;;
     *)
-        sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         exit 2
         ;;
 esac
