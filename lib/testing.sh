@@ -18,8 +18,9 @@ forwarded_env() {
 #   VMKIT_ARTIFACT_ENV       env var name the guest test reads (e.g. PORTZERO_EXE)
 #   VMKIT_ARTIFACT_WINDOWS   repo-relative path (guest sees it via the share)
 #   VMKIT_ARTIFACT_LINUX     repo-relative path (guest sees it via the share)
-#   VMKIT_ARTIFACT_MACOS     repo-relative path (PUSHED into the guest; macOS
-#                            guests have no working shared folder)
+#   VMKIT_ARTIFACT_MACOS     repo-relative path; prefer the Parallels share when
+#                            TCC allows it, otherwise tar.gz-push into the guest
+#                            (base64-over-heredoc was retired — too slow/silent)
 artifact_env_for() { # <vm>  — prints KEY=guestpath or nothing
     local vm="$1" os aenv="${VMKIT_ARTIFACT_ENV:-}"
     [ -z "$aenv" ] && return 0
@@ -32,8 +33,16 @@ artifact_env_for() { # <vm>  — prints KEY=guestpath or nothing
     local host_path="$VMKIT_REPO_ROOT/$rel"
     [ -e "$host_path" ] || return 0
     if [ "$os" = macos ]; then
-        echo ">> pushing host artifact into the guest (macOS shared folder unavailable)..." >&2
-        printf '%s=%s\n' "$aenv" "$(push_file_macos "$vm" "$host_path" "$VMKIT_GUEST_DIR/bin/$(basename "$host_path")" +x)"
+        local share_path
+        if share_path="$(macos_guest_path_via_share "$vm" "$host_path")"; then
+            echo ">> using artifact via macOS shared folder as $aenv: $rel" >&2
+            printf '%s=%s\n' "$aenv" "$share_path"
+        else
+            # Share is typically mounted-but-TCC-blocked under headless exec;
+            # tar.gz-push with keepalive is the reliable path (see transport.sh).
+            echo ">> pushing host artifact into the guest (macOS shared folder unusable under headless TCC)..." >&2
+            printf '%s=%s\n' "$aenv" "$(push_file_macos "$vm" "$host_path" "$VMKIT_GUEST_DIR/bin/$(basename "$host_path")" +x)"
+        fi
     else
         echo ">> using artifact as $aenv: $rel" >&2
         printf '%s=%s\n' "$aenv" "$(guest_path_under_repo "$vm" "$host_path")"

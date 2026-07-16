@@ -15,8 +15,9 @@ that makes that reliable:
   revert-collapse recovery, one-VM-at-a-time.
 - **Cache-first provisioning** — downloads happen once into an offline cache;
   the test path only reverts snapshots (metered-link safe).
-- **Encoded guest quirks** — SYSTEM/UNC on Windows, base64-push transport on
-  macOS, headless-OS capability limits (docs/CAPABILITIES.md).
+- **Encoded guest quirks** — SYSTEM/UNC on Windows, tar.gz-push (+ keepalive)
+  transport on macOS (shared folder is TCC-blocked under headless exec),
+  headless-OS capability limits (docs/CAPABILITIES.md).
 
 The division of labor is strict and documented: a human installs the OS +
 Parallels Guest Tools and takes one golden snapshot per VM
