@@ -45,10 +45,16 @@ fighting an OS limit.
   environment from every reader** — `ps -E` and `KERN_PROCARGS2` alike, even
   as root. If a test tags a service via env vars, run it from a *copy* of the
   interpreter at an unrestricted path.
-- **The Parallels shared folder is unusable** after a snapshot revert (SMB
-  mount needs an authenticated GUI login). vmkit pushes scripts/binaries in
-  via `prlctl exec ... bash -s` base64 payloads — never rely on
-  /Volumes/SharedFolders in a macOS guest.
+- **The Parallels shared folder is unusable under headless `prlctl exec`.**
+  `prl_fsd` still mounts `//guest:@Shared Folders` at `/Volumes/SharedFolders`,
+  but every reader (root and the interactive user) gets TCC
+  `Operation not permitted`. Host Shared Folders on/off does not change this;
+  SIP blocks seeding TCC.db from the headless path. vmkit therefore:
+  1. Probes the share and uses it if a future guest/snapshot ever grants access.
+  2. Otherwise **tar.gz-pushes** scripts/binaries over `prlctl exec` stdin
+     (same approach as Parallels' `prlcopy`) with a 15s keepalive line so the
+     GitHub self-hosted runner never goes silent mid-transfer.
+  Never rely on `/Volumes/SharedFolders` from flavor scripts.
 - macOS guests are slow off external storage; expect flakiness if the bundle
   is not on the internal disk (vmkit's boot policy enforces this).
 
