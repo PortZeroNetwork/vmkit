@@ -144,14 +144,16 @@ cmd_up() { # <vm>
     local ready; ready="$(snap_id_by_name "$vm" "$rsnap" || true)"
     if [ -n "$ready" ]; then
         echo ">> reverting to existing running snapshot '$rsnap'"
-        prlctl snapshot-switch "$vm" -i "$ready" >/dev/null
+        prlctl snapshot-switch "$vm" -i "$ready" >/dev/null \
+            || { echo "failed to switch '$vm' to snapshot '$rsnap'" >&2; return 1; }
         ensure_running "$vm"; echo "ready"; return 0
     fi
     local gsnap gid; gsnap="$(resolve_snap "$vm" golden)"
     gid="$(snap_id_by_name "$vm" "$gsnap")" \
         || { echo "golden snapshot '$gsnap' not found on '$vm' (see docs/HUMAN-SETUP.md)" >&2; return 1; }
     echo ">> reverting to golden '$gsnap' and booting"
-    prlctl snapshot-switch "$vm" -i "$gid" >/dev/null
+    prlctl snapshot-switch "$vm" -i "$gid" >/dev/null \
+        || { echo "failed to switch '$vm' to snapshot '$gsnap'" >&2; return 1; }
     prlctl start "$vm" >/dev/null
     wait_ready "$vm"
     prlctl snapshot "$vm" -n "$rsnap" -d "Booted + guest tools. Per-test reset point." >/dev/null
@@ -172,7 +174,8 @@ cmd_reset() { # <vm> [name=ready]
     id="$(snap_id_by_name "$vm" "$snap")" \
         || { echo "no snapshot '$snap' (run: vmkit up / vmkit checkpoint)" >&2; return 1; }
     ensure_only "$vm"
-    prlctl snapshot-switch "$vm" -i "$id" >/dev/null
+    prlctl snapshot-switch "$vm" -i "$id" >/dev/null \
+        || { echo "failed to switch '$vm' to snapshot '$snap'" >&2; return 1; }
     wait_ready "$vm"
     echo "reset to '$snap'"
 }
