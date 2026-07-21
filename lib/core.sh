@@ -58,17 +58,63 @@ ensure_running() { # <vm>
     wait_ready "$vm"
 }
 
+# Stop a VM under a hard host-side timebox, escalating to --kill.
+#
+# `prlctl stop --fast` is NOT reliably bounded: a guest that stalls its
+# shutdown (mid-Spotlight-index, stuck flush, modal shutdown blocker — a guest
+# left wedged by a previously killed test is the common case) keeps it blocking
+# indefinitely. Observed: 21.5 minutes on a macOS guest. That silently burns a
+# CI runner's ~10-minute job lease, GitHub reclaims the job as Abandoned
+# mid-test, and the leg fails having proved nothing — which leaves ANOTHER
+# wedged guest for the next leg to trip over, so the failure cascades.
+#
+# --kill is safe here: every automated caller reverts to a snapshot right after
+# (see cmd_reset), so a dirty guest disk is discarded regardless.
+# VMKIT_STOP_TIMEOUT seconds; default 120.
+stop_vm() { # <vm>
+    local vm="$1"
+    local secs="${VMKIT_STOP_TIMEOUT:-120}"
+    local i pid
+
+    prlctl stop "$vm" --fast >/dev/null 2>&1 &
+    pid=$!
+    for i in $(seq 1 "$secs"); do
+        kill -0 "$pid" 2>/dev/null || break
+        [ $(( i % 30 )) -eq 0 ] && echo ">> still stopping '$vm'... (${i}s/${secs}s)"
+        sleep 1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -TERM "$pid" 2>/dev/null; sleep 1; kill -KILL "$pid" 2>/dev/null
+    fi
+    wait "$pid" 2>/dev/null || true
+
+    is_running "$vm" || return 0
+
+    echo ">> '$vm' ignored graceful stop after ${secs}s — killing" >&2
+    prlctl stop "$vm" --kill >/dev/null 2>&1 || true
+    for i in $(seq 1 30); do
+        is_running "$vm" || return 0
+        sleep 1
+    done
+    echo "vmkit: '$vm' still running after --kill" >&2
+    return 1
+}
+
 # One-VM-at-a-time: stop every OTHER running VM (memory/disk contention on a
 # single host makes concurrent guests flaky).
 ensure_only() { # <vm>
-    local keep="$1" name
-    prlctl list -o name --no-header 2>/dev/null | while IFS= read -r name; do
+    local keep="$1" name running
+    # Collect first rather than piping into the loop: a piped `while` runs in a
+    # subshell, so stop_vm's failures could not propagate out of it.
+    running="$(prlctl list -o name --no-header 2>/dev/null)"
+    while IFS= read -r name; do
         [ -z "$name" ] && continue
-        if [ "$name" != "$keep" ]; then
-            echo ">> stopping other running VM: $name"
-            prlctl stop "$name" --fast >/dev/null 2>&1 || true
-        fi
-    done
+        [ "$name" = "$keep" ] && continue
+        echo ">> stopping other running VM: $name"
+        stop_vm "$name" || true
+    done <<EOF
+$running
+EOF
 }
 
 # --- internal-disk-only recovery ------------------------------------------------
