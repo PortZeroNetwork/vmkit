@@ -77,7 +77,7 @@ case "$cmd" in
     reset)       vmkit_load_host_conf; cmd_reset "$(resolve_vm_arg "$1")" "${2:-}" ;;
     run)         vmkit_load_host_conf; vmkit_load_repo_conf; v="$(resolve_vm_arg "$1")"; shift; cmd_run "$v" "$@" ;;
     exec)        vmkit_load_host_conf; v="$(resolve_vm_arg "$1")"; shift; prlctl exec "$v" "$@" ;;
-    stop)        vmkit_load_host_conf; prlctl stop "$(resolve_vm_arg "$1")" --fast 2>&1 | tail -1 ;;
+    stop)        vmkit_load_host_conf; stop_vm "$(resolve_vm_arg "$1")" ;;
     ensure-only) vmkit_load_host_conf; ensure_only "$(resolve_vm_arg "$1")" ;;
     test)        vmkit_load_host_conf; vmkit_load_repo_conf; cmd_test "$@" ;;
     series)      vmkit_load_host_conf; vmkit_load_repo_conf; cmd_series "$@" ;;
