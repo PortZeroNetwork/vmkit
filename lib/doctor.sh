@@ -52,6 +52,37 @@ doctor_run() {
             || _warn "download cache missing: $VMKIT_CACHE_DIR (provisioning will need network)"
     fi
 
+    # --- host memory capacity (issue #6) ---
+    # A series that starts near the host's memory ceiling boots straight into an
+    # OOM and produces product-looking failures. Check that the host physically
+    # has room for its largest guest plus harness headroom, and flag when memory
+    # is too tight to start right now (the series would block on host_mem_settle).
+    local total_mb largest=0 largest_vm="" pp vv ram
+    total_mb="$(host_total_mb)"
+    for pp in $(host_platforms); do
+        vv="$(platform_var "$pp")"; ram="$(vm_ram_mb "$vv")"
+        if [ -n "$ram" ] && [ "$ram" -gt "$largest" ]; then largest="$ram"; largest_vm="$vv"; fi
+    done
+    if [ -n "$total_mb" ] && [ "$largest" -gt 0 ]; then
+        local headroom="${VMKIT_MEM_HEADROOM_MB:-2048}" need
+        need=$(( largest + headroom ))
+        if [ "$total_mb" -ge "$need" ]; then
+            _ok "host RAM ${total_mb}MB covers largest guest '$largest_vm' (${largest}MB) + ${headroom}MB headroom"
+        else
+            _fail "host RAM ${total_mb}MB < largest guest '$largest_vm' (${largest}MB) + ${headroom}MB headroom — a series will OOM the host (lower VMKIT_MEM_HEADROOM_MB or reduce guest RAM)"
+        fi
+        local freem; freem="$(host_free_mb)"
+        if [ -n "$freem" ]; then
+            if [ "$freem" -ge "$need" ]; then
+                _ok "available now ${freem}MB (>= ${need}MB needed to boot '$largest_vm')"
+            else
+                _warn "available now ${freem}MB (< ${need}MB) — a series started now would block up to ${VMKIT_MEM_WAIT_TIMEOUT:-180}s waiting for memory to free (see host_mem_settle)"
+            fi
+        fi
+    else
+        _warn "could not read host memory (vm_stat/sysctl) — memory preflight skipped"
+    fi
+
     # --- per-platform VM inventory ---
     local p vm archive home snap missing_snap
     for p in $(host_platforms); do

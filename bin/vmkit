@@ -49,6 +49,8 @@ VMKIT_SHARE="$(cd "$VMKIT_LIB/.." && pwd)"          # holds guest-lib/, template
 # shellcheck source=/dev/null
 . "$VMKIT_LIB/config.sh"
 # shellcheck source=/dev/null
+. "$VMKIT_LIB/host.sh"
+# shellcheck source=/dev/null
 . "$VMKIT_LIB/core.sh"
 # shellcheck source=/dev/null
 . "$VMKIT_LIB/transport.sh"

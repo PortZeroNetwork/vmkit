@@ -115,13 +115,16 @@ cmd_test() { # <platform> [flavor=local]
     local effective_vm
     effective_vm="$(resolve_effective_vm "$vm")" || return 1
     echo ">> using '$effective_vm'"
+    host_snapshot
     local script; script="$(flavor_script "$flavor" "$platform")" || return 1
     cmd_reset "$effective_vm" "$VMKIT_TEST_SNAP" || rc=$?
     if [ "$rc" -eq 0 ]; then
         echo ">> running $script on '$effective_vm'..."
+        host_snapshot
         VMKIT_RUN_TIMEOUT="${VMKIT_RUN_TIMEOUT:-$(flavor_timeout "$flavor")}" \
             cmd_run "$effective_vm" "$script" || rc=$?
     fi
+    host_snapshot   # teardown boundary: capture the host state the run left behind
     local elapsed=$(( $(date +%s) - start ))
     if [ "$rc" -eq 0 ]; then
         echo "=== $platform ($flavor): PASS (${elapsed}s) ==="

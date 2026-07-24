@@ -71,12 +71,24 @@ ensure_running() { # <vm>
 # --kill is safe here: every automated caller reverts to a snapshot right after
 # (see cmd_reset), so a dirty guest disk is discarded regardless.
 # VMKIT_STOP_TIMEOUT seconds; default 120.
+#
+# Stop MODE is VMKIT_STOP_MODE (default "shutdown"). A clean shutdown returns the
+# guest's multi-GB RAM to the host promptly; "suspend" shuffles that RAM to/from
+# disk and keeps competing for host memory during the handoff — exactly the
+# thrash that OOM-kills the next guest's test (issue #5). Suspend is nicer for a
+# developer's interactive VMs (state preserved), so it stays selectable, but
+# shutdown is the default because vmkit reverts to a snapshot next anyway.
 stop_vm() { # <vm>
     local vm="$1"
     local secs="${VMKIT_STOP_TIMEOUT:-120}"
+    local mode="${VMKIT_STOP_MODE:-shutdown}"
     local i pid
 
-    prlctl stop "$vm" --fast >/dev/null 2>&1 &
+    if [ "$mode" = suspend ]; then
+        prlctl suspend "$vm" >/dev/null 2>&1 &
+    else
+        prlctl stop "$vm" --fast >/dev/null 2>&1 &
+    fi
     pid=$!
     for i in $(seq 1 "$secs"); do
         kill -0 "$pid" 2>/dev/null || break
@@ -101,9 +113,18 @@ stop_vm() { # <vm>
 }
 
 # One-VM-at-a-time: stop every OTHER running VM (memory/disk contention on a
-# single host makes concurrent guests flaky).
+# single host makes concurrent guests flaky). After stopping the sibling(s),
+# block until the host has actually reclaimed enough memory to boot the target
+# guest (issue #3) — the sibling's RAM comes back over seconds, and booting the
+# target before it does is what OOM-killed a test subprocess mid-handoff. A host
+# snapshot brackets the stop for post-hoc diagnosis (issue #4).
+#
+# Returns non-zero if memory never recovers within the budget, so callers can
+# abort the test loudly with the free-memory reading instead of proceeding into
+# an OOM (see cmd_reset / cmd_up).
 ensure_only() { # <vm>
-    local keep="$1" name running
+    local keep="$1" name running stopped=0
+    host_snapshot
     # Collect first rather than piping into the loop: a piped `while` runs in a
     # subshell, so stop_vm's failures could not propagate out of it.
     running="$(prlctl list -o name --no-header 2>/dev/null)"
@@ -112,9 +133,16 @@ ensure_only() { # <vm>
         [ "$name" = "$keep" ] && continue
         echo ">> stopping other running VM: $name"
         stop_vm "$name" || true
+        stopped=1
     done <<EOF
 $running
 EOF
+    # Only wait when we actually freed a sibling: `prlctl list` (no -a) lists
+    # RUNNING VMs, so stopped=1 means a multi-GB guest just released its RAM.
+    if [ "$stopped" -eq 1 ]; then
+        host_snapshot
+        host_mem_settle "$keep" || return 1
+    fi
 }
 
 # --- internal-disk-only recovery ------------------------------------------------
@@ -186,7 +214,7 @@ resolve_effective_vm() { # <working-vm-name>  (prints the vm to use, or fails)
 # --- lifecycle commands -----------------------------------------------------------
 cmd_up() { # <vm>
     local vm="$1" rsnap; rsnap="$(resolve_snap "$vm" ready)"
-    ensure_only "$vm"
+    ensure_only "$vm" || return 1
     local ready; ready="$(snap_id_by_name "$vm" "$rsnap" || true)"
     if [ -n "$ready" ]; then
         echo ">> reverting to existing running snapshot '$rsnap'"
@@ -219,7 +247,7 @@ cmd_reset() { # <vm> [name=ready]
     local vm="$1" name="${2:-ready}" snap id; snap="$(resolve_snap "$vm" "$name")"
     id="$(snap_id_by_name "$vm" "$snap")" \
         || { echo "no snapshot '$snap' (run: vmkit up / vmkit checkpoint)" >&2; return 1; }
-    ensure_only "$vm"
+    ensure_only "$vm" || return 1
     prlctl snapshot-switch "$vm" -i "$id" >/dev/null \
         || { echo "failed to switch '$vm' to snapshot '$snap'" >&2; return 1; }
     wait_ready "$vm"
