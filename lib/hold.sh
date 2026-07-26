@@ -106,17 +106,58 @@ hold_guard() { # <vm-we-are-about-to-keep>
     return 1
 }
 
+hold_usage() {
+    echo "usage: vmkit hold [reason words] [--vm <platform|name>] [--ttl <seconds>] [--steal]"
+    echo "       vmkit hold                 show the current hold"
+    echo "       vmkit hold --status        show the current hold"
+    echo "       vmkit unhold               release it"
+}
+
 cmd_hold() {
-    local reason="" vm="" ttl="$VMKIT_HOLD_TTL_DEFAULT" steal=0
+    local reason="" vm="" ttl="$VMKIT_HOLD_TTL_DEFAULT" steal=0 report=0
     while [ $# -gt 0 ]; do
         case "$1" in
-            --vm)    vm="$(resolve_vm_arg "$2")"; shift 2 ;;
-            --ttl)   ttl="$2"; shift 2 ;;
-            --steal) steal=1; shift ;;
-            --)      shift ;;
+            --vm|--ttl)
+                # Neither ever takes a leading-dash value, so a missing one
+                # would otherwise swallow the NEXT flag (`--vm --ttl 60` held
+                # a VM literally named "--ttl") or shift past the end.
+                case "${2:-}" in
+                    ''|-*) echo "vmkit: $1 needs a value" >&2; hold_usage >&2; return 2 ;;
+                esac
+                case "$1" in
+                    --vm)  vm="$(resolve_vm_arg "$2")" ;;
+                    --ttl) ttl="$2" ;;
+                esac
+                shift 2 ;;
+            --steal)        steal=1; shift ;;
+            --status|--list) report=1; shift ;;
+            # Everything after `--` is reason text, however it is spelled.
+            --)      shift
+                     while [ $# -gt 0 ]; do reason="${reason:+$reason }$1"; shift; done ;;
+            # An unrecognized FLAG is a typo, not a reason. Falling through to
+            # the catch-all below made `vmkit hold --list` claim the entire
+            # host for four hours with the reason "--list" — every subsequent
+            # ensure_only refused, i.e. a CI outage, and the confirmation it
+            # printed back read like success. Reasons are still free text; they
+            # just may not masquerade as options.
+            -*)      { echo "vmkit: unknown option '$1'"
+                       hold_usage
+                       echo "       (to use it as reason text: vmkit hold -- '$1')"
+                     } >&2
+                     return 2 ;;
             *)       reason="${reason:+$reason }$1"; shift ;;
         esac
     done
+
+    # Reporting is never an acquisition, so it may not carry acquire-only args.
+    if [ "$report" = 1 ]; then
+        if [ -n "$reason" ] || [ -n "$vm" ] || [ "$steal" = 1 ]; then
+            echo "vmkit: --status only reports; it takes no reason, --vm, --ttl or --steal" >&2
+            return 2
+        fi
+        hold_describe || true
+        return 0
+    fi
 
     # No arguments at all: report rather than acquire. Acquiring an unexplained
     # hold by typo is exactly the forgotten-hold failure we are guarding.

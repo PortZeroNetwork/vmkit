@@ -18,8 +18,8 @@
 #   vmkit exec <platform|vm> <cmd...>       raw command in the guest
 #   vmkit stop <platform|vm>                power off
 #   vmkit ensure-only <platform|vm>         stop every OTHER running VM
-#   vmkit hold [reason] [--vm x] [--ttl s]  claim the host (blocks ensure_only);
-#                                    no args prints the current hold
+#   vmkit hold [reason] [--vm x] [--ttl s]  claim the host (blocks ensure_only)
+#   vmkit hold [--status]            print the current hold, claim nothing
 #   vmkit unhold                     release the hold
 #   vmkit test <platform> [flavor]   reset to built, run the flavor's script
 #   vmkit series <flavor> [platform] all platforms in series + summary
