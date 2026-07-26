@@ -21,17 +21,70 @@ forwarded_env() {
 #   VMKIT_ARTIFACT_MACOS     repo-relative path; prefer the Parallels share when
 #                            TCC allows it, otherwise tar.gz-push into the guest
 #                            (base64-over-heredoc was retired — too slow/silent)
-artifact_env_for() { # <vm>  — prints KEY=guestpath or nothing
-    local vm="$1" os aenv="${VMKIT_ARTIFACT_ENV:-}"
+
+# Host-side path of the auto-discovered artifact for <vm>, or nothing when
+# there is none to discover (no VMKIT_ARTIFACT_ENV, caller set it explicitly,
+# no per-OS path configured, or the file isn't staged). Split out of
+# artifact_env_for so the arch check below can run BEFORE anything is pushed —
+# artifact_env_for is consumed through `< <(...)`, where a non-zero return is
+# swallowed, so it can't refuse an artifact on its own.
+artifact_host_path_for() { # <vm>  — prints host path or nothing
+    local vm="$1" aenv="${VMKIT_ARTIFACT_ENV:-}"
     [ -z "$aenv" ] && return 0
     [ -n "${!aenv:-}" ] && return 0          # explicit env wins
+    local os key rel
     os="$(vm_os "$vm")"
-    local key
     key="VMKIT_ARTIFACT_$(echo "$os" | tr '[:lower:]' '[:upper:]')"
-    local rel="${!key:-}"
+    rel="${!key:-}"
     [ -z "$rel" ] && return 0
     local host_path="$VMKIT_REPO_ROOT/$rel"
     [ -e "$host_path" ] || return 0
+    printf '%s\n' "$host_path"
+}
+
+# Refuse an artifact the guest cannot execute, before pushing 16 MB of it and
+# watching every assertion fail for reasons that never mention architecture.
+#
+# The artifact is built wherever CI felt like building it; the guest's arch is
+# a property of the Mac hosting Parallels. Those used to coincide (the builder
+# WAS the host) and no longer have to — a CI change that moves a macOS build
+# to a GitHub-hosted (Apple Silicon) runner produces an arm64 binary that
+# cannot exec in an x86_64 guest on an Intel host. Every phase then reports a
+# bare `ok=false`; nothing anywhere prints "bad CPU type".
+#
+# macOS guests only: `lipo -archs` names architectures exactly as `uname -m`
+# does, so the comparison is trustworthy. ELF/PE naming diverges from uname
+# (x86-64, aarch64, ...) and would need a translation table to be more than
+# guesswork, so linux/windows guests are deliberately not covered here.
+assert_artifact_runnable() { # <vm> <host-path>  — 0 = ok/unknown, 1 = mismatch
+    local vm="$1" host_path="$2" bin_archs guest_arch
+    [ "$(vm_os "$vm")" = macos ] || return 0
+    command -v lipo >/dev/null 2>&1 || return 0
+    # Non-Mach-O (a script, a tarball) — nothing to compare, not an error.
+    bin_archs="$(lipo -archs "$host_path" 2>/dev/null)" || return 0
+    [ -z "$bin_archs" ] && return 0
+    # Ask the guest rather than assuming it matches the host: it's one cheap
+    # exec, and the guest is already up (ensure_running ran first).
+    guest_arch="$(prlctl exec "$vm" uname -m 2>/dev/null | tr -d '\r' | tail -n1)"
+    [ -z "$guest_arch" ] && return 0         # can't tell; let the test proceed
+    case " $bin_archs " in
+        *" $guest_arch "*) return 0 ;;
+    esac
+    echo "vmkit: artifact cannot run in guest '$vm'" >&2
+    echo "  $host_path" >&2
+    echo "  built for: $bin_archs" >&2
+    echo "  guest is:  $guest_arch" >&2
+    echo "  Build this artifact for ${guest_arch}-apple-darwin (or a universal binary)." >&2
+    return 1
+}
+
+artifact_env_for() { # <vm>  — prints KEY=guestpath or nothing
+    local vm="$1" os aenv="${VMKIT_ARTIFACT_ENV:-}"
+    local host_path
+    host_path="$(artifact_host_path_for "$vm")"
+    [ -z "$host_path" ] && return 0
+    os="$(vm_os "$vm")"
+    local rel="${host_path#"$VMKIT_REPO_ROOT"/}"
     if [ "$os" = macos ]; then
         local share_path
         if share_path="$(macos_guest_path_via_share "$vm" "$host_path")"; then
@@ -66,6 +119,16 @@ cmd_run() { # <vm> <repo-relative-script> [args...]
     local vm="$1" script="$2"; shift 2
     ensure_running "$vm" || return 1
     local os; os="$(vm_os "$vm")"
+
+    # Fail here, not 8 minutes into the guest script, if the artifact was
+    # built for the wrong architecture. Must happen before the env plumbing
+    # below, which pushes the artifact from inside a `< <(...)` that would
+    # discard the refusal.
+    local artifact_path
+    artifact_path="$(artifact_host_path_for "$vm")"
+    if [ -n "$artifact_path" ]; then
+        assert_artifact_runnable "$vm" "$artifact_path" || return 1
+    fi
 
     if [ "$os" = windows ]; then
         local win; win="$(guest_repo "$vm")\\${script//\//\\}"
