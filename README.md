@@ -78,16 +78,28 @@ about your local session.
 VM-stopping path checks:
 
 ```sh
-vmkit hold "debugging the installer" --vm windows   # claim it
-vmkit hold                                          # who has it, until when
-vmkit unhold                                        # release
+export VMKIT_HOLD_TOKEN=$(vmkit hold --print-token "debugging the installer" --vm windows)
+vmkit hold            # who has it, until when
+vmkit unhold          # release
 ```
 
-A hold naming a VM permits work on that VM and blocks everything else; a hold
-naming none blocks the whole host. Holds **always expire** (`--ttl`, default
-4h) — a forgotten hold that wedged CI until someone noticed would be worse than
-the failure this prevents. `VMKIT_IGNORE_HOLD=1` overrides, `vmkit doctor`
-surfaces an active one, and `vmkit hold --steal` takes over.
+**Authorization is by token, never by VM name.** A live hold blocks every
+VM-stopping path for everybody; only a caller carrying `VMKIT_HOLD_TOKEN` from
+the record gets through. Export it, or your own `vmkit reset` is refused by your
+own hold. `--vm` is documentation of what the host is being used for, nothing
+more.
+
+That distinction is the whole point. An earlier version keyed on the VM name —
+holding a VM permitted work on *that* VM, so the holder could reset their own
+guest. It protected every VM except the one actually in use: a CI job targeting
+the same guest matched and reverted it mid-provision. Everyone on this host runs
+as the same unix user, so pid/user/VM-name cannot tell a session from a CI job;
+a token can.
+
+Holds **always expire** (`--ttl`, default 4h) — a forgotten hold that wedged CI
+until someone noticed would be worse than the failure this prevents.
+`VMKIT_IGNORE_HOLD=1` overrides, `vmkit doctor` surfaces an active one, and
+`vmkit hold --steal` takes over.
 
 For a long session on a machine that is also a CI runner, stop the runner
 service too: a hold makes the job **fail** with the reason, whereas an offline

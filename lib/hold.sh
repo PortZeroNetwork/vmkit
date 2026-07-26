@@ -79,17 +79,31 @@ hold_describe() { # [indent]
 
 # THE GUARD. Called from ensure_only before it stops anything.
 #
-# A hold naming a VM permits work on THAT VM — the holder still needs to reset
-# and boot the guest they are holding — and blocks everything else. A hold
-# naming no VM blocks the whole host, including its own holder (release it to
-# proceed); that is deliberate, since a bare hold means "nothing may touch this
-# machine".
+# Authorization is by TOKEN, never by VM name.
+#
+# The first version keyed on the VM name: a hold naming a VM permitted work on
+# THAT VM, so the holder could still reset and boot their own guest. That is
+# exactly backwards, and it cost a 20-minute provisioning run on 2026-07-26. A
+# CI vm-test job targeting the very same guest matched `held == keep` and sailed
+# through, reverting the guest to its own baseline snapshot mid-provision. The
+# rule protected every VM EXCEPT the one actually in use.
+#
+# So: a live hold blocks every VM-stopping path, for everybody, unless the
+# caller carries VMKIT_HOLD_TOKEN matching the record. The holder exports it
+# (see cmd_hold); CI has no idea it exists and is refused. `--vm` survives only
+# as documentation of what the host is being used for.
+#
+# Blocking ALL VMs rather than just the held one is deliberate: ensure_only
+# stops the others to boot its target, so "CI may use a different guest" is not
+# a thing that exists on a one-VM-at-a-time host.
 hold_guard() { # <vm-we-are-about-to-keep>
-    local keep="$1" held
+    local keep="$1"
     hold_read >/dev/null 2>&1 || return 0            # no live hold, carry on
 
-    held="$(hold_field VM)"
-    [ -n "$held" ] && [ "$held" = "$keep" ] && return 0
+    # The holder passes; nobody else does.
+    if [ -n "${VMKIT_HOLD_TOKEN:-}" ] && [ "${VMKIT_HOLD_TOKEN}" = "$(hold_field TOKEN)" ]; then
+        return 0
+    fi
 
     if [ "${VMKIT_IGNORE_HOLD:-}" = 1 ]; then
         echo ">> WARNING: VMKIT_IGNORE_HOLD=1 — proceeding through an active hold:" >&2
@@ -110,11 +124,12 @@ hold_usage() {
     echo "usage: vmkit hold [reason words] [--vm <platform|name>] [--ttl <seconds>] [--steal]"
     echo "       vmkit hold                 show the current hold"
     echo "       vmkit hold --status        show the current hold"
+    echo "       vmkit hold --print-token … acquire, print only the token (for scripts)"
     echo "       vmkit unhold               release it"
 }
 
 cmd_hold() {
-    local reason="" vm="" ttl="$VMKIT_HOLD_TTL_DEFAULT" steal=0 report=0
+    local reason="" vm="" ttl="$VMKIT_HOLD_TTL_DEFAULT" steal=0 report=0 print_token=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --vm|--ttl)
@@ -130,6 +145,7 @@ cmd_hold() {
                 esac
                 shift 2 ;;
             --steal)        steal=1; shift ;;
+            --print-token)  print_token=1; shift ;;
             --status|--list) report=1; shift ;;
             # Everything after `--` is reason text, however it is spelled.
             --)      shift
@@ -176,18 +192,33 @@ cmd_hold() {
         return 1
     fi
 
-    local f; f="$(hold_file)"
+    local f tok; f="$(hold_file)"
+    # Ownership token: the ONLY thing that distinguishes the holder from any
+    # other process on this machine. Everyone here runs as the same unix user,
+    # so pid/user/VM-name can't tell a session apart from a CI job.
+    tok="$(uuidgen 2>/dev/null || od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
     mkdir -p "$(hold_dir)"
     rm -f "$f"
     {
         echo "VMKIT_HOLD_REASON=$reason"
         echo "VMKIT_HOLD_VM=$vm"
+        echo "VMKIT_HOLD_TOKEN=$tok"
         echo "VMKIT_HOLD_USER=$(id -un)"
         echo "VMKIT_HOLD_PID=$PPID"
         echo "VMKIT_HOLD_ACQUIRED=$(now_epoch)"
         echo "VMKIT_HOLD_EXPIRES=$(( $(now_epoch) + ttl ))"
     } > "$f"
-    echo ">> host held for ${vm:-<entire host>} ($(hold_remaining) left): ${reason:-(none given)}"
+    chmod 600 "$f"
+
+    if [ "$print_token" = 1 ]; then
+        # Machine-readable: the caller captures this and exports it, so its own
+        # vmkit invocations are recognized as the holder's.
+        printf '%s\n' "$tok"
+        return 0
+    fi
+    echo ">> host held${vm:+ for $vm} ($(hold_remaining) left): ${reason:-(none given)}"
+    echo "   Your own vmkit commands need the ownership token — export it:"
+    echo "     export VMKIT_HOLD_TOKEN=$tok"
 }
 
 cmd_unhold() {
