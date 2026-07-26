@@ -9,8 +9,10 @@
 #   external boot     booting a VM off the archive drive is slow/flaky/wearing
 #                     -> internal-disk-only policy in resolve_effective_vm
 #   contention        two harness invocations fight over the single VM host
-#                     -> ensure_only (one-VM-at-a-time), callers must serialize
-#                     runs (CI concurrency group; don't run local tests during CI)
+#                     -> ensure_only (one-VM-at-a-time) + a CI concurrency group
+#   stomped session   ensure_only stops OTHER VMs, so a CI job landing during
+#                     interactive use powers off the guest a human is in
+#                     -> `vmkit hold` (lib/hold.sh), checked by ensure_only
 
 # --- snapshot helpers ---------------------------------------------------------
 snap_id_by_name() { # <vm> <snapshot-name>
@@ -124,6 +126,10 @@ stop_vm() { # <vm>
 # an OOM (see cmd_reset / cmd_up).
 ensure_only() { # <vm>
     local keep="$1" name running stopped=0
+    # Cooperative host hold (lib/hold.sh): someone is using this machine
+    # interactively, so refuse to power their guest off rather than enforcing
+    # one-VM-at-a-time over the top of them.
+    hold_guard "$keep" || return 1
     host_snapshot
     # Collect first rather than piping into the loop: a piped `while` runs in a
     # subshell, so stop_vm's failures could not propagate out of it.

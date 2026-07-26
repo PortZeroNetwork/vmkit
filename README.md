@@ -27,11 +27,18 @@ Every failure mode this harness has hit is cataloged with its guard in
 
 ## Install
 
+vmkit is internal and **not distributed through Homebrew** — it is not part of
+the Port Zero product and must not appear in the product's public tap. Clone
+and install:
+
 ```sh
-brew install portzeronetwork/portzero/vmkit
+git clone git@github.com:PortZeroNetwork/vmkit.git && cd vmkit
+just install             # -> /usr/local/bin/vmkit (override: just install ~/.local)
 vmkit init-host          # then edit ~/.config/vmkit/host.conf
 vmkit doctor             # validate the machine against the contract
 ```
+
+To update: `git pull && just install`.
 
 ## Use in a repo
 
@@ -58,6 +65,33 @@ vmkit provision windows vmtest/scripts/windows-add-defender-exclusions.ps1 \
 
 See [docs/PROVISIONING.md](docs/PROVISIONING.md) for the full model (anchors,
 preservation, failure handling).
+
+### Claiming the host for an interactive session
+
+`ensure_only` enforces one-VM-at-a-time by **stopping every other running VM**.
+That is right for a queue of harness runs and destructive for a human working
+inside a guest: a CI job landing mid-session powers their VM off. A GitHub
+`concurrency:` group serializes CI jobs against *each other* and knows nothing
+about your local session.
+
+`vmkit hold` is the missing half — a cooperative lock every implicit
+VM-stopping path checks:
+
+```sh
+vmkit hold "debugging the installer" --vm windows   # claim it
+vmkit hold                                          # who has it, until when
+vmkit unhold                                        # release
+```
+
+A hold naming a VM permits work on that VM and blocks everything else; a hold
+naming none blocks the whole host. Holds **always expire** (`--ttl`, default
+4h) — a forgotten hold that wedged CI until someone noticed would be worse than
+the failure this prevents. `VMKIT_IGNORE_HOLD=1` overrides, `vmkit doctor`
+surfaces an active one, and `vmkit hold --steal` takes over.
+
+For a long session on a machine that is also a CI runner, stop the runner
+service too: a hold makes the job **fail** with the reason, whereas an offline
+runner makes it **queue** until you're done.
 
 ### Host-side desktop control (agent / manual UI)
 

@@ -14,7 +14,8 @@ Validate any machine against this contract with `vmkit doctor`.
    be on the internal disk. If it must point elsewhere, know that any manual
    `prlctl clone`/`create` without `--dst` lands there — vmkit always passes
    `--dst`, and `vmkit doctor` warns about this footgun.
-3. **Install vmkit** (`brew install <tap>/vmkit`), then `vmkit init-host` and
+3. **Install vmkit** (clone the repo, `just install` — not Homebrew; see the
+   README's Install section for why), then `vmkit init-host` and
    edit `~/.config/vmkit/host.conf` (arch, VM names, archive drive, cache dir).
 4. If this machine is a CI runner: install the GitHub Actions runner **as a
    service** (`./svc.sh install && ./svc.sh start`), never interactive

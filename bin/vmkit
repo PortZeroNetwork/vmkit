@@ -18,6 +18,9 @@
 #   vmkit exec <platform|vm> <cmd...>       raw command in the guest
 #   vmkit stop <platform|vm>                power off
 #   vmkit ensure-only <platform|vm>         stop every OTHER running VM
+#   vmkit hold [reason] [--vm x] [--ttl s]  claim the host (blocks ensure_only);
+#                                    no args prints the current hold
+#   vmkit unhold                     release the hold
 #   vmkit test <platform> [flavor]   reset to built, run the flavor's script
 #   vmkit series <flavor> [platform] all platforms in series + summary
 #   vmkit provision <platform|vm> <script> [opts]  bake one-time guest config
@@ -66,6 +69,8 @@ VMKIT_SHARE="$(cd "$VMKIT_LIB/.." && pwd)"          # holds guest-lib/, template
 . "$VMKIT_LIB/agents.sh"
 # shellcheck source=/dev/null
 . "$VMKIT_LIB/provision.sh"
+# shellcheck source=/dev/null
+. "$VMKIT_LIB/hold.sh"
 
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 case "$cmd" in
@@ -81,6 +86,8 @@ case "$cmd" in
     exec)        vmkit_load_host_conf; v="$(resolve_vm_arg "$1")"; shift; prlctl exec "$v" "$@" ;;
     stop)        vmkit_load_host_conf; stop_vm "$(resolve_vm_arg "$1")" ;;
     ensure-only) vmkit_load_host_conf; ensure_only "$(resolve_vm_arg "$1")" ;;
+    hold)        vmkit_load_host_conf; cmd_hold "$@" ;;
+    unhold|release) cmd_unhold "$@" ;;
     test)        vmkit_load_host_conf; vmkit_load_repo_conf; cmd_test "$@" ;;
     series)      vmkit_load_host_conf; vmkit_load_repo_conf; cmd_series "$@" ;;
     provision)   [ $# -ge 2 ] || { echo "usage: vmkit provision <platform|vm> <script> [--checkpoint name] [--label label] [--preserve-as name] [--no-preserve] [--anchor name] [--timeout secs] [-- args...]" >&2; exit 2; }
@@ -105,7 +112,7 @@ case "$cmd" in
     guest-lib)   echo "$VMKIT_SHARE/guest-lib" ;;
     version|--version) cat "$VMKIT_SHARE/VERSION" 2>/dev/null || echo dev ;;
     *)
-        sed -n '2,35p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         exit 2
         ;;
 esac

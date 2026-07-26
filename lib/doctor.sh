@@ -19,6 +19,17 @@ doctor_run() {
     fi
     command -v prlsrvctl >/dev/null 2>&1 || _warn "prlsrvctl not found"
 
+    # --- host hold ---
+    # A live hold makes every reset/test refuse, which looks like a broken host
+    # if you don't know it's there. Surface it as a WARN, not a FAIL: the host
+    # is healthy, it is just claimed.
+    if hold_read >/dev/null 2>&1; then
+        _warn "host is HELD — reset/test/series will refuse until released (vmkit unhold)"
+        hold_describe "        "
+    else
+        _ok "no host hold"
+    fi
+
     # --- host arch sanity ---
     local harch; harch="$(uname -m)"
     if [ "$harch" = "$VMKIT_ARCH" ]; then
