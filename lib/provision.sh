@@ -76,12 +76,56 @@ cmd_provision() { # <vm> <script> [options...]  (see usage below)
     fi
 
     echo ">> running provisioning script '$script' in the guest (timeout ${timeout}s)"
-    local rc=0
+    local rc=0 out
+    # Capture as well as show: the exit status alone is not trustworthy enough
+    # to bake a snapshot on — see the RESULT gate below.
+    out="$(mktemp)"
+    # `set +e` rather than `|| true` on the pipeline: `|| true` runs a simple
+    # command on failure, which RESETS PIPESTATUS to (0) — so PIPESTATUS[0]
+    # would read 0 for every failing script and silently defeat the non-zero
+    # exit check below.
+    set +e
     if [ "${#script_args[@]}" -gt 0 ]; then
-        VMKIT_RUN_TIMEOUT="$timeout" cmd_run "$effective_vm" "$script" "${script_args[@]}" || rc=$?
+        VMKIT_RUN_TIMEOUT="$timeout" cmd_run "$effective_vm" "$script" "${script_args[@]}" 2>&1 | tee "$out"
     else
-        VMKIT_RUN_TIMEOUT="$timeout" cmd_run "$effective_vm" "$script" || rc=$?
+        VMKIT_RUN_TIMEOUT="$timeout" cmd_run "$effective_vm" "$script" 2>&1 | tee "$out"
     fi
+    rc="${PIPESTATUS[0]}"
+    set -e
+
+    # A guest script that says nothing and exits 0 is NOT a success.
+    #
+    # Learned the hard way (2026-07-26): a PowerShell provisioning script hit
+    # `Get-LocalGroupMember`, which kills the whole PowerShell session on some
+    # Windows builds — no exception, no stderr, and `prlctl exec` still reported
+    # exit 0. vmkit took that as success and re-captured BOTH the checkpoint and
+    # the permanent anchor from a completely unprovisioned guest. The anchor is
+    # the expensive one: it exists precisely so a metered re-download is never
+    # needed, and it is never auto-overwritten, so a bad one is durable.
+    #
+    # Every vmkit guest script ends with `RESULT=PASS|FAIL|SKIP` (the flavor
+    # protocol). Require it. Silence now fails loudly instead of being baked in.
+    # RESULT=PASS specifically, not merely "a RESULT= line": a script that
+    # reports RESULT=FAIL while exiting 0 must not get its state baked in either.
+    if [ "$rc" -eq 0 ] && ! grep -q '^RESULT=PASS' "$out"; then
+        rc=1
+        {
+            if [ ! -s "$out" ]; then
+                echo "vmkit provision: guest script '$script' exited 0 and produced NO OUTPUT AT ALL."
+                echo "   It almost certainly died before its first statement — a crashed interpreter"
+                echo "   still yields exit 0 through prlctl exec."
+            elif grep -q '^RESULT=' "$out"; then
+                echo "vmkit provision: guest script '$script' reported $(grep -m1 '^RESULT=' "$out")."
+            else
+                echo "vmkit provision: guest script '$script' exited 0 but never printed RESULT=PASS."
+                echo "   It stopped part-way through (see its output above)."
+            fi
+            echo "   Refusing to bake this state into a checkpoint. Reproduce by hand with:"
+            echo "     vmkit exec $(printf '%q' "$effective_vm") <interpreter> <guest-path-to-script>"
+        } >&2
+    fi
+    rm -f "$out"
+
     if [ "$rc" -ne 0 ]; then
         echo "vmkit provision: guest script '$script' failed (exit $rc)." >&2
         echo "   '$(resolve_snap "$effective_vm" "$checkpoint")' was NOT re-captured — the guest is left at the" >&2
