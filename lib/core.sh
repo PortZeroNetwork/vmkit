@@ -143,12 +143,23 @@ ensure_only() { # <vm>
     done <<EOF
 $running
 EOF
-    # Only wait when we actually freed a sibling: `prlctl list` (no -a) lists
-    # RUNNING VMs, so stopped=1 means a multi-GB guest just released its RAM.
-    if [ "$stopped" -eq 1 ]; then
-        host_snapshot
-        host_mem_settle "$keep" || return 1
-    fi
+    [ "$stopped" -eq 1 ] && host_snapshot
+
+    # ALWAYS check memory, not just after freeing a sibling.
+    #
+    # This used to be gated on stopped=1, on the reasoning that only a sibling's
+    # exit frees multi-GB of RAM. But the host is a person's laptop: pressure
+    # arrives from Safari, an IDE, and an agent session too, with no sibling VM
+    # anywhere. With the check skipped, `cmd_reset` walked straight into a
+    # snapshot-switch on a 16 GB guest with 6.2 GB available and Parallels
+    # refused it with "freezes because the Mac is experiencing performance
+    # problems and its hard disk is busy" — which reads like disk corruption and
+    # sends you looking in the wrong place entirely.
+    #
+    # host_mem_settle returns immediately when memory is already sufficient, so
+    # this is free in the common case, and waits-then-fails-loudly with the
+    # actual MB reading when it is not.
+    host_mem_settle "$keep" || return 1
 }
 
 # --- internal-disk-only recovery ------------------------------------------------
