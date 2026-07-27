@@ -149,6 +149,8 @@ the full pristine-machine suite.
 
 ## Docs
 
+- [SPEC.md](docs/SPEC.md) — v1 specification: runtime primitives + the Vmkitfile,
+  written as acceptance criteria for the Rust port
 - [HUMAN-SETUP.md](docs/HUMAN-SETUP.md) — the human/machine contract, new-machine
   bootstrap (including Apple Silicon arch migration)
 - [CAPABILITIES.md](docs/CAPABILITIES.md) — what guest scripts can/can't do per OS
