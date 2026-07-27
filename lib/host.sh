@@ -69,6 +69,15 @@ host_snapshot() {
 # test harness itself. Headroom is VMKIT_MEM_HEADROOM_MB (default 2048).
 host_mem_need_mb() { # <vm>
     local ram; ram="$(vm_ram_mb "$1")"; [ -z "$ram" ] && ram=0
+    # A VM that is ALREADY RUNNING has its RAM allocated: reverting it to a
+    # snapshot reuses that allocation rather than asking the host for a second
+    # copy. Counting it again is how this guard demanded 14336 MB while the
+    # 12 GB guest it was measuring sat there already holding 12 GB — free memory
+    # could never reach the bar, and the reset was refused for three minutes
+    # before failing on a shortage that did not exist.
+    if is_running "$1" 2>/dev/null; then
+        ram=0
+    fi
     printf '%d' "$(( ram + ${VMKIT_MEM_HEADROOM_MB:-2048} ))"
 }
 
