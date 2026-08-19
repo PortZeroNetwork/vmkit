@@ -162,10 +162,52 @@ init_host_conf() {
     echo "wrote $conf — edit the VM names, then run: vmkit doctor"
 }
 
+# Write the repo config AND scaffold the script layout it references.
+#
+# The layout is scaffolded rather than described because describing it did not
+# work. guest-lib/assert.sh says "copy this file next to your flavor scripts",
+# which reads equally well as "beside the scripts directory" — and a sibling
+# `../lib` resolves on the host, is absent in the guest (only the script's own
+# directory is pushed), and used to produce a GREEN leg in which every
+# assertion was `command not found` (docs/FAILURES.md #22, #23). Making the
+# correct layout the default removes the copy step from the setup path
+# entirely, so there is nothing left to get wrong.
 init_repo_conf() {
-    if [ -f vmkit.conf ] && [ "${1:-}" != "--force" ]; then
+    local force=0
+    [ "${1:-}" = "--force" ] && force=1
+    if [ -f vmkit.conf ] && [ "$force" = 0 ]; then
         echo "vmkit: ./vmkit.conf already exists (use --force to overwrite)" >&2; exit 1
     fi
     cp "$VMKIT_SHARE/templates/vmkit.conf" vmkit.conf
-    echo "wrote ./vmkit.conf — define your flavors, then run: vmkit test <platform> <flavor>"
+    echo "wrote ./vmkit.conf"
+
+    # Paths here must match the flavor scripts templates/vmkit.conf names.
+    local sdir="vmtest/scripts"
+    mkdir -p "$sdir/lib"
+    local src dst
+    for src in assert.sh assert.ps1; do
+        dst="$sdir/lib/$src"
+        if [ -e "$dst" ] && [ "$force" = 0 ]; then
+            echo "kept $dst (already present)"
+        else
+            cp "$VMKIT_SHARE/guest-lib/$src" "$dst"
+            echo "wrote $dst"
+        fi
+    done
+    for src in smoke.sh smoke.ps1; do
+        dst="$sdir/$src"
+        if [ -e "$dst" ] && [ "$force" = 0 ]; then
+            echo "kept $dst (already present)"
+        else
+            cp "$VMKIT_SHARE/templates/scaffold/$src" "$dst"
+            [ "${src##*.}" = sh ] && chmod +x "$dst"
+            echo "wrote $dst"
+        fi
+    done
+    echo ""
+    echo "The helpers are INSIDE $sdir/lib on purpose: vmkit pushes the flavor"
+    echo "script's own directory into the guest and nothing above it."
+    echo "Next: edit the flavors in ./vmkit.conf, then"
+    echo "  vmkit check-scripts        # parse-check them, no VM needed"
+    echo "  vmkit test <platform> smoke"
 }

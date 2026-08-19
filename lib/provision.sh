@@ -61,6 +61,12 @@ cmd_provision() { # <vm> <script> [options...]  (see usage below)
     local effective_vm
     effective_vm="$(resolve_effective_vm "$vm")" || return 1
 
+    # Hold the host for the whole reset -> run -> re-checkpoint dance. This is
+    # the exact sequence a CI job once reverted mid-flight (FAILURES.md #4):
+    # provisioning is the longest and most expensive thing vmkit does, and the
+    # window between its reset and its checkpoint is all of it.
+    self_hold "$(self_hold_ttl "$timeout")" "vmkit provision $effective_vm $script" || return 1
+
     echo "=== vmkit provision: '$effective_vm' <- $script ==="
     echo ">> reset to '$(resolve_snap "$effective_vm" "$checkpoint")' (pristine reset point)"
     cmd_reset "$effective_vm" "$checkpoint" || return 1

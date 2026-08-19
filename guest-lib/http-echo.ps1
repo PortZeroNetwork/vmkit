@@ -1,7 +1,7 @@
 #Requires -Version 5
 # Minimal HTTP server that a real in-process TCP socket owns (System.Net.Sockets
 # .TcpListener binds in THIS process, so the daemon's port->PID discovery
-# attributes the listening port to us — unlike HttpListener/http.sys, which
+# attributes the listening port to us -- unlike HttpListener/http.sys, which
 # would show pid 4). Prints "PORT=<n>" once bound, then serves $Body to every
 # request until killed. No external deps (the golden VM has no python).
 #

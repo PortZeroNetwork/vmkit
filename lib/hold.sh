@@ -111,13 +111,20 @@ hold_guard() { # <vm-we-are-about-to-keep>
         return 0
     fi
 
+    hold_refuse "to touch '$keep'"
+    return 1
+}
+
+# The refusal, in one place. Downstream CI greps for "the VM host is HELD by
+# another session" and a refused leg must exit non-zero (it has tested nothing),
+# so the wording and the status are both part of the contract.
+hold_refuse() { # <what-we-were-about-to-do>
     {
-        echo "vmkit: the VM host is HELD by another session — refusing to touch '$keep'."
+        echo "vmkit: the VM host is HELD by another session — refusing $1."
         hold_describe "       "
         echo "       Release it with:  vmkit unhold"
         echo "       Or wait for it to expire, or override with: VMKIT_IGNORE_HOLD=1 vmkit ..."
     } >&2
-    return 1
 }
 
 hold_usage() {
@@ -192,23 +199,14 @@ cmd_hold() {
         return 1
     fi
 
-    local f tok; f="$(hold_file)"
-    # Ownership token: the ONLY thing that distinguishes the holder from any
-    # other process on this machine. Everyone here runs as the same unix user,
-    # so pid/user/VM-name can't tell a session apart from a CI job.
-    tok="$(uuidgen 2>/dev/null || od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
-    mkdir -p "$(hold_dir)"
-    rm -f "$f"
-    {
-        echo "VMKIT_HOLD_REASON=$reason"
-        echo "VMKIT_HOLD_VM=$vm"
-        echo "VMKIT_HOLD_TOKEN=$tok"
-        echo "VMKIT_HOLD_USER=$(id -un)"
-        echo "VMKIT_HOLD_PID=$PPID"
-        echo "VMKIT_HOLD_ACQUIRED=$(now_epoch)"
-        echo "VMKIT_HOLD_EXPIRES=$(( $(now_epoch) + ttl ))"
-    } > "$f"
-    chmod 600 "$f"
+    local tok
+    tok="$(hold_acquire "$reason" "$vm" "$ttl" "$steal" "$PPID")" || {
+        {
+            echo "vmkit: could not claim the host."
+            hold_describe "       " || echo "       (state dir $(hold_dir) not writable?)"
+        } >&2
+        return 1
+    }
 
     if [ "$print_token" = 1 ]; then
         # Machine-readable: the caller captures this and exports it, so its own
@@ -219,6 +217,152 @@ cmd_hold() {
     echo ">> host held${vm:+ for $vm} ($(hold_remaining) left): ${reason:-(none given)}"
     echo "   Your own vmkit commands need the ownership token — export it:"
     echo "     export VMKIT_HOLD_TOKEN=$tok"
+}
+
+# Write the hold record and print its token. Returns 1 if the host is already
+# held (unless <steal>).
+#
+# The record is created with `ln`, which is atomic and FAILS if the target
+# exists, so two invocations racing for an unheld host cannot both believe they
+# won. A plain `> "$f"` cannot promise that, and "two CI jobs dispatched in the
+# same second" is precisely the case a self-hold exists to serialize.
+hold_acquire() { # <reason> <vm> <ttl-seconds> <steal:0|1> [pid]  — prints the token
+    local reason="$1" vm="$2" ttl="$3" steal="${4:-0}" pid="${5:-$$}"
+    local f tmp tok
+    f="$(hold_file)"
+    mkdir -p "$(hold_dir)" 2>/dev/null || return 1
+    # Ownership token: the ONLY thing that distinguishes the holder from any
+    # other process on this machine. Everyone here runs as the same unix user,
+    # so pid/user/VM-name can't tell a session apart from a CI job.
+    tok="$(uuidgen 2>/dev/null || od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
+    tmp="$f.$$.tmp"
+    {
+        echo "VMKIT_HOLD_REASON=$reason"
+        echo "VMKIT_HOLD_VM=$vm"
+        echo "VMKIT_HOLD_TOKEN=$tok"
+        echo "VMKIT_HOLD_USER=$(id -un)"
+        echo "VMKIT_HOLD_PID=$pid"
+        echo "VMKIT_HOLD_ACQUIRED=$(now_epoch)"
+        echo "VMKIT_HOLD_EXPIRES=$(( $(now_epoch) + ttl ))"
+    } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+    chmod 600 "$tmp" 2>/dev/null || true
+    [ "$steal" = 1 ] && rm -f "$f"
+    if ! ln "$tmp" "$f" 2>/dev/null; then
+        rm -f "$tmp"
+        return 1
+    fi
+    rm -f "$tmp"
+    printf '%s\n' "$tok"
+}
+
+# --- the self-hold ------------------------------------------------------------
+# One VM at a time was a property of each INVOCATION, not of the host: nothing
+# in `vmkit test`/`series`/`run`/`reset`/`up`/`provision` claimed anything, so
+# two invocations interleaved —
+#
+#   A: ensure_only -> nothing else running, proceeds
+#   A: starts VM1
+#   B: ensure_only -> stops VM1   (A's guest, mid-test)
+#   B: starts VM2
+#   A: ...continues against a guest that is no longer running
+#
+# — and the documented mitigations both live outside vmkit. A GitHub
+# `concurrency:` group serializes one workflow in one repository; it cannot see
+# a second self-hosted runner on the same host, another org's jobs, an agent
+# session, or a person. `vmkit hold` is the right primitive but is opt-in, so
+# the invariant held by convention. Downstream that is not hypothetical: the
+# Mac hosting the guests also runs a runner for a different GitHub org.
+#
+# So every VM-mutating command now takes a hold for its own duration. The
+# behaviour a caller sees when the host is busy is unchanged — the same refusal
+# `hold_guard` has always given, and the same non-zero exit — because a refused
+# leg that went green would be worse than a queued one.
+#
+# Escape hatch: VMKIT_NO_SELF_HOLD=1 restores pre-0.4.6 behaviour for anyone
+# deliberately driving several hosts from one process tree.
+
+# Headroom added to a self-hold's TTL beyond the work it covers. A flavor's
+# timeout budgets the guest script only; the hold must also survive
+# ensure_only's stop of a sibling (VMKIT_STOP_TIMEOUT + kill), the memory
+# settle (VMKIT_MEM_WAIT_TIMEOUT), the boot/revert wait (up to 180s) and the
+# script push. Getting this wrong in either direction is the fiddly part: too
+# short and a long flavor loses its own hold mid-run, too long and a killed run
+# blocks the host until someone runs `vmkit unhold`.
+: "${VMKIT_SELF_HOLD_MARGIN:=900}"
+# Nothing self-held ever outlives this, whatever the arithmetic says — the
+# same ceiling a human hold gets by default.
+: "${VMKIT_SELF_HOLD_MAX:=14400}"
+
+# TTL for a self-hold covering <seconds> of guest-script work.
+self_hold_ttl() { # <seconds-of-work>
+    local work="${1:-0}" ttl
+    case "$work" in ''|*[!0-9]*) work=0 ;; esac
+    ttl=$(( work + VMKIT_SELF_HOLD_MARGIN ))
+    [ "$ttl" -gt "$VMKIT_SELF_HOLD_MAX" ] && ttl="$VMKIT_SELF_HOLD_MAX"
+    printf '%s' "$ttl"
+}
+
+# Non-empty only when THIS process acquired the hold (so nested calls, and
+# `vmkit hold` run by a human, are never released by us).
+_VMKIT_SELF_HOLD_TOKEN=""
+
+self_hold() { # <ttl-seconds> <reason...>
+    local ttl="$1"; shift
+    local reason="$*"
+
+    [ "${VMKIT_NO_SELF_HOLD:-}" = 1 ] && return 0
+
+    # Already ours — an outer vmkit command, or a caller that exported the
+    # token from `vmkit hold --print-token`. Inherit it; do not stack a second
+    # hold, and above all do not release someone else's on the way out.
+    if [ -n "${VMKIT_HOLD_TOKEN:-}" ] && [ "$VMKIT_HOLD_TOKEN" = "$(hold_field TOKEN)" ]; then
+        return 0
+    fi
+
+    if hold_read >/dev/null 2>&1; then
+        if [ "${VMKIT_IGNORE_HOLD:-}" = 1 ]; then
+            echo ">> WARNING: VMKIT_IGNORE_HOLD=1 — proceeding through an active hold:" >&2
+            hold_describe "   " >&2
+            return 0                      # an override is not an acquisition
+        fi
+        hold_refuse "to start: $reason"
+        return 1
+    fi
+
+    local tok
+    if ! tok="$(hold_acquire "$reason" "" "$ttl" 0 "$$")"; then
+        if hold_read >/dev/null 2>&1; then
+            # Lost the race by milliseconds. Exactly the case this exists for.
+            hold_refuse "to start: $reason"
+            return 1
+        fi
+        echo ">> WARNING: could not write a host hold under $(hold_dir)." >&2
+        echo "   Continuing UNHELD: a concurrent vmkit invocation could stop this guest mid-run." >&2
+        return 0
+    fi
+    _VMKIT_SELF_HOLD_TOKEN="$tok"
+    export VMKIT_HOLD_TOKEN="$tok"
+    # Release on every way out, including a killed CI job. Subshells reset
+    # traps, so run_guarded's background timers cannot fire these.
+    trap 'self_hold_release' EXIT
+    trap 'self_hold_release; trap - INT; kill -INT $$' INT
+    trap 'self_hold_release; exit 143' TERM
+    trap 'self_hold_release; exit 129' HUP
+    echo ">> host held for this run ($(hold_remaining)): $reason" >&2
+}
+
+self_hold_release() {
+    local tok="${_VMKIT_SELF_HOLD_TOKEN:-}"
+    [ -n "$tok" ] || return 0
+    _VMKIT_SELF_HOLD_TOKEN=""
+    # Only ever release OUR record. If ours expired mid-run and someone else
+    # has since claimed the host, deleting their hold would be precisely the
+    # stomp this whole file exists to prevent.
+    if [ "$(hold_field TOKEN)" = "$tok" ]; then
+        rm -f "$(hold_file)"
+    fi
+    unset VMKIT_HOLD_TOKEN
+    return 0
 }
 
 cmd_unhold() {

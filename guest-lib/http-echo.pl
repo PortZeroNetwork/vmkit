@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 # Minimal HTTP server that THIS process owns the listening socket for (so the
 # daemon's port->PID discovery attributes the port to us). Cross-platform via
-# core Perl (IO::Socket::INET) — the Linux/macOS VMs have perl but not python.
+# core Perl (IO::Socket::INET) -- the Linux/macOS VMs have perl but not python.
 # The caller sets PZ_TUNNEL in the environment before launching this so the
 # daemon discovers this process as the tagged service.
 #   http-echo.pl <body> [port]

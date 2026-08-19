@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# A fake `prlctl`, so vmkit's own guards can be tested without a Mac, without
+# Parallels, and without the ~40 seconds a real guest costs per run.
+#
+# THIS IS NOT A PARALLELS EMULATOR. It models exactly the surface vmkit uses:
+# VM power state, a flat snapshot list, and `exec`. `exec` runs the command on
+# the host with guest paths translated, which makes the "guest" a real shell
+# that really exits non-zero and really fails to source a missing helper — the
+# properties the verdict gate is about. What it deliberately does NOT model:
+# revert-collapse, TCC on the macOS share, SYSTEM identity, or prlctl's own
+# habit of returning 0 for a guest that crashed. Those need a real guest, and
+# tests/run.sh says so where a case cannot be written.
+#
+# State lives under $VMKIT_FAKE_ROOT:
+#   vms/<name>/state        running | stopped
+#   vms/<name>/snapshots    one "{uuid} <name>" line per snapshot
+#   guest/                  the guest filesystem root (for /tmp pushes)
+#   calls.log               every invocation, for tests that assert on ordering
+set -uo pipefail
+
+root="${VMKIT_FAKE_ROOT:?fake prlctl requires VMKIT_FAKE_ROOT}"
+guest="$root/guest"
+mkdir -p "$root/vms" "$guest"
+printf '%s\n' "$*" >> "$root/calls.log"
+
+vmdir() { printf '%s/vms/%s' "$root" "$1"; }
+have_vm() { [ -d "$(vmdir "$1")" ]; }
+state()  { cat "$(vmdir "$1")/state" 2>/dev/null || echo stopped; }
+setstate() { mkdir -p "$(vmdir "$1")"; printf '%s' "$2" > "$(vmdir "$1")/state"; }
+
+# Guest path -> host path. The two mappings vmkit actually relies on:
+#   /media/psf/Home/...  the Parallels share of host $HOME (linux guests)
+#   /tmp/...             the macOS push target, kept inside the fake guest root
+#                        so a test can assert what did and did not arrive
+map_path() {
+    case "$1" in
+        /media/psf/Home/*) printf '%s/%s' "$HOME" "${1#/media/psf/Home/}" ;;
+        /tmp/*)            printf '%s%s' "$guest" "$1" ;;
+        *)                 printf '%s' "$1" ;;
+    esac
+}
+
+sub="${1:-}"; shift || true
+
+case "$sub" in
+    status)
+        have_vm "$1" || { echo "The VM $1 does not exist." >&2; exit 1; }
+        # Real prlctl prints `VM "x" exist stopped`; is_running greps for
+        # "running", so a stopped VM must not contain that word anywhere.
+        echo "VM \"$1\" exist $(state "$1")"
+        ;;
+    list)
+        if [ "${1:-}" = "-i" ]; then
+            have_vm "$2" || { echo "The VM $2 does not exist." >&2; exit 1; }
+            echo "ID: {00000000-0000-0000-0000-000000000000}"
+            echo "Name: $2"
+            echo "State: $(state "$2")"
+            # No `memory size=` line on purpose: vm_ram_mb then reads empty and
+            # the memory guard falls back to headroom only, which is what a
+            # test wants to exercise (host.sh's real readings are the host's).
+            exit 0
+        fi
+        # `prlctl list` with no --all lists RUNNING VMs; ensure_only depends on
+        # exactly that.
+        local_all=0
+        for a in "$@"; do [ "$a" = "--all" ] && local_all=1; done
+        for d in "$root"/vms/*/; do
+            [ -d "$d" ] || continue
+            n="$(basename "$d")"
+            if [ "$local_all" = 1 ] || [ "$(state "$n")" = running ]; then
+                echo "$n"
+            fi
+        done
+        ;;
+    snapshot-list)
+        vm="$1"; shift
+        f="$(vmdir "$vm")/snapshots"
+        [ -f "$f" ] || exit 0
+        if [ "${1:-}" = "-i" ]; then
+            id="$2"
+            name="$(awk -v id="$id" '$1 == id { $1=""; sub(/^ /,""); print }' "$f")"
+            [ -n "$name" ] || exit 1
+            echo "ID: $id"
+            echo "Name: $name"
+            exit 0
+        fi
+        awk '{print "  " $1}' "$f"
+        ;;
+    snapshot-switch)
+        vm="$1"; shift
+        [ "${1:-}" = "-i" ] || { echo "expected -i" >&2; exit 1; }
+        grep -q "^$2 " "$(vmdir "$vm")/snapshots" || { echo "no such snapshot" >&2; exit 1; }
+        # vmkit's snapshots are RUNNING snapshots: reverting leaves it booted.
+        setstate "$vm" running
+        ;;
+    snapshot)
+        vm="$1"; shift
+        name=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                -n) name="$2"; shift 2 ;;
+                -d) shift 2 ;;
+                *)  shift ;;
+            esac
+        done
+        id="{$(od -An -tx1 -N4 /dev/urandom | tr -d ' \n')-0000-0000-0000-000000000000}"
+        printf '%s %s\n' "$id" "$name" >> "$(vmdir "$vm")/snapshots"
+        ;;
+    snapshot-delete)
+        vm="$1"; shift
+        [ "${1:-}" = "-i" ] || exit 1
+        f="$(vmdir "$vm")/snapshots"
+        grep -v "^$2 " "$f" > "$f.new" 2>/dev/null; mv "$f.new" "$f"
+        ;;
+    start)   setstate "$1" running ;;
+    stop)    setstate "$1" stopped ;;
+    suspend) setstate "$1" stopped ;;
+    exec)
+        vm="$1"; shift
+        have_vm "$vm" || { echo "The VM $vm does not exist." >&2; exit 255; }
+        [ "$(state "$vm")" = running ] || {
+            echo "The virtual machine is not started." >&2; exit 255; }
+        args=()
+        for a in "$@"; do args+=("$(map_path "$a")"); done
+        exec "${args[@]}"
+        ;;
+    *)
+        echo "fake prlctl: unhandled subcommand '$sub' $*" >&2
+        exit 64
+        ;;
+esac

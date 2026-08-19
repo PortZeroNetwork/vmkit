@@ -44,10 +44,40 @@ To update: `git pull && just install`.
 
 ```sh
 cd my-repo
-vmkit init               # writes ./vmkit.conf — define flavors there
+vmkit init               # ./vmkit.conf + vmtest/scripts/{lib,smoke.sh,smoke.ps1}
+vmkit check-scripts      # parse-check the flavor scripts — no VM, ~2s
 vmkit test linux smoke   # reset to "built", run one flavor on one platform
 vmkit series lifecycle   # every configured platform in series + summary
 ```
+
+`vmkit init` scaffolds the script layout as well as the config, because the
+layout is not arbitrary: **only the flavor script's own directory is pushed
+into the guest.** The helpers therefore live in `vmtest/scripts/lib/`, inside
+it — a sibling `../lib` resolves on the host and is absent in the guest.
+
+### The flavor protocol, and what counts as a pass
+
+Flavor scripts live in your repo, run *inside* the guests, and speak a tiny
+greppable protocol: `PHASE=<name> ok=true|false|SKIP` lines as they go, and a
+final `RESULT=PASS|FAIL|SKIP`.
+
+vmkit reads **both** that line and the guest's exit status, and reports one of:
+
+| Outcome | Means | First thing to look at |
+|---|---|---|
+| `PASS` / `SKIP` | verdict printed, guest exited 0 | — |
+| `FAIL` | `RESULT=FAIL`, or a non-zero exit | the `PHASE=` lines |
+| `NO-RESULT` | the script never reached its verdict | where its output *stops* — usually a helper it could not source |
+| `NO-OUTPUT` | not one byte printed | a crashed interpreter (still exits 0 through `prlctl exec`) |
+| `SETUP-FAILED` | the guest never reached the script | the reset/boot above it |
+| `TIMEOUT` | `VMKIT_FLAVOR_<NAME>_TIMEOUT` elapsed | the last phase printed |
+
+A missing `RESULT=` line is a **failure**, never a pass, and `RESULT=PASS`
+followed by a non-zero exit is a failure too: everything after the last
+`PHASE=` line did not happen. `VMKIT_REQUIRE_RESULT=0` opts out of the first
+half for a script that predates the protocol; the exit status is not
+negotiable. (docs/FAILURES.md #22 — this used to report `PASS (40s)` for a leg
+in which every assertion was `command not found`.)
 
 ### One-time guest provisioning
 
@@ -66,16 +96,25 @@ vmkit provision windows vmtest/scripts/windows-add-defender-exclusions.ps1 \
 See [docs/PROVISIONING.md](docs/PROVISIONING.md) for the full model (anchors,
 preservation, failure handling).
 
-### Claiming the host for an interactive session
+### Claiming the host
 
 `ensure_only` enforces one-VM-at-a-time by **stopping every other running VM**.
-That is right for a queue of harness runs and destructive for a human working
-inside a guest: a CI job landing mid-session powers their VM off. A GitHub
-`concurrency:` group serializes CI jobs against *each other* and knows nothing
-about your local session.
+That is right for a queue of harness runs and destructive for anything else on
+the machine: a CI job landing mid-session powers off the guest a human is
+working in, and two CI jobs landing together stop each other's guests mid-test.
+A GitHub `concurrency:` group serializes one workflow in one repository and
+knows nothing about your local session, a second self-hosted runner on the same
+host, or another organization's jobs.
 
-`vmkit hold` is the missing half — a cooperative lock every implicit
-VM-stopping path checks:
+**Every VM-mutating command now claims the host for its own duration** —
+`test`, `series`, `run`, `reset`, `up`, `provision` — and releases on exit and
+on signal. One VM at a time is a property of the host, not of one invocation.
+The TTL is derived from the flavor timeout plus a margin for the sibling stop,
+the memory settle and the boot (capped at 4h, so a killed run cannot wedge the
+host), which is information vmkit has and a caller would have to guess at.
+`VMKIT_NO_SELF_HOLD=1` restores the old behaviour.
+
+`vmkit hold` is the same lock, taken by hand for an interactive session:
 
 ```sh
 export VMKIT_HOLD_TOKEN=$(vmkit hold --print-token "debugging the installer" --vm windows)
@@ -126,10 +165,6 @@ snapshot ladder, test flavors, archive drive) and wire it the same way
 do: one `@.instructions/vmkit.md` line in `AGENTS.md`, and `CLAUDE.md` as a
 thin `@AGENTS.md` pointer. No marker blocks in the root agent files.
 
-Flavor scripts live in your repo, run *inside* the guests, and speak a tiny
-greppable protocol (`PHASE=… ok=true|false|SKIP`, final `RESULT=PASS|FAIL|SKIP`).
-Copy the helpers from `$(vmkit guest-lib)/assert.sh|.ps1` into your repo's
-`vmtest/scripts/lib/` and source them.
 
 ## Fleet management
 
@@ -141,11 +176,19 @@ vmkit list               # VMs + snapshot ladders
 
 ## CI
 
-Run the self-hosted runner **as a service** (never interactive `run.sh`), give
-the workflow a `concurrency` group that queues (never cancels) VM jobs, stage
+Run the self-hosted runner **as a service** (never interactive `run.sh`), stage
 CI-built artifacts where `VMKIT_ARTIFACT_*` points, and call
 `vmkit series <flavor>`. Split triggers so PRs run a fast smoke and pushes run
 the full pristine-machine suite.
+
+A `concurrency` group that queues (never cancels) VM jobs is still worth having
+— queueing beats a refusal — but it is no longer what makes one-VM-at-a-time
+true: vmkit claims the host itself, so a second runner, another repository, an
+agent session or a person is serialized too. A leg that arrives while the host
+is busy fails with the reason rather than going green having tested nothing.
+
+vmkit's own CI needs neither a Mac nor Parallels: `just test` runs the verdict
+gate, the script lint and the hold against a fake `prlctl` in about 30 seconds.
 
 ## Docs
 

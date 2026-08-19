@@ -1,0 +1,1 @@
+this file lives one level above the script dir and must not reach a macOS guest

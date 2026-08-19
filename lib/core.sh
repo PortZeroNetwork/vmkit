@@ -231,6 +231,10 @@ resolve_effective_vm() { # <working-vm-name>  (prints the vm to use, or fails)
 # --- lifecycle commands -----------------------------------------------------------
 cmd_up() { # <vm>
     local vm="$1" rsnap; rsnap="$(resolve_snap "$vm" ready)"
+    # Claim the host for the boot (FAILURES.md #4). No guest script runs here,
+    # so the margin alone covers it: a sibling stop, the memory settle and the
+    # readiness wait. Re-entrant under `vmkit test`/`series`.
+    self_hold "$(self_hold_ttl 0)" "vmkit up $vm" || return 1
     ensure_only "$vm" || return 1
     local ready; ready="$(snap_id_by_name "$vm" "$rsnap" || true)"
     if [ -n "$ready" ]; then
@@ -264,6 +268,7 @@ cmd_reset() { # <vm> [name=ready]
     local vm="$1" name="${2:-ready}" snap id; snap="$(resolve_snap "$vm" "$name")"
     id="$(snap_id_by_name "$vm" "$snap")" \
         || { echo "no snapshot '$snap' (run: vmkit up / vmkit checkpoint)" >&2; return 1; }
+    self_hold "$(self_hold_ttl 0)" "vmkit reset $vm $name" || return 1
     ensure_only "$vm" || return 1
     prlctl snapshot-switch "$vm" -i "$id" >/dev/null \
         || { echo "failed to switch '$vm' to snapshot '$snap'" >&2; return 1; }
@@ -316,11 +321,27 @@ run_guarded() { # <vm> <cmd...>
     local start; start="$(date +%s)"
     "$@" &
     local pid=$!
-    ( sleep "$secs"; echo 1 > "$marker"; kill -TERM "$pid" 2>/dev/null; sleep 3; kill -KILL "$pid" 2>/dev/null ) &
+    # Both timers below MUST let go of this function's stdout/stderr the moment
+    # the guest command finishes, or a caller that pipes us (cmd_run tees the
+    # guest's output to read its RESULT= line; cmd_provision tees it too) waits
+    # on the pipe until the timer's own `sleep` expires — up to the full
+    # VMKIT_RUN_TIMEOUT of silence AFTER the script already printed RESULT=.
+    # `kill`ing a subshell does not kill the `sleep` it is blocked in, and the
+    # orphan keeps the write end open.
+    #
+    # The killer never prints, so it simply drops both streams.
+    ( sleep "$secs"; echo 1 > "$marker"; kill -TERM "$pid" 2>/dev/null; sleep 3; kill -KILL "$pid" 2>/dev/null ) >/dev/null 2>&1 &
     local killer=$!
-    # Host-side heartbeat so a guest script that goes quiet never looks hung.
-    ( while kill -0 "$pid" 2>/dev/null; do
-          sleep 30
+    # The heartbeat has to keep stderr, so instead it polls in 1s steps and
+    # exits on its own the moment the guest command is gone. Nothing outlives
+    # the run by more than a second.
+    ( local waited
+      while kill -0 "$pid" 2>/dev/null; do
+          waited=0
+          while [ "$waited" -lt 30 ]; do
+              kill -0 "$pid" 2>/dev/null || exit 0
+              sleep 1; waited=$(( waited + 1 ))
+          done
           kill -0 "$pid" 2>/dev/null \
               && echo ">> still running on '$vm'... ($(( $(date +%s) - start ))s elapsed, ${secs}s budget)" >&2
       done ) &

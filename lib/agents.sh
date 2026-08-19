@@ -188,12 +188,24 @@ vmkit mouse <platform> click|...   # click / wheel / relative nudge only
 ## Notes for AI agents working in this repo
 
 - Guest scripts speak a greppable protocol: \`PHASE=<name> ok=true|false|SKIP\`
-  lines, ending with \`RESULT=PASS|FAIL|SKIP\`.
+  lines, ending with \`RESULT=PASS|FAIL|SKIP\`. Reaching that last line is part
+  of what a leg proves: a script that ends without it is reported \`NO-RESULT\`,
+  never as a pass, and a \`RESULT=PASS\` followed by a non-zero exit is a
+  \`FAIL\`.
+- Helpers live in a \`lib/\` INSIDE the flavor script's own directory. vmkit
+  pushes that directory into the guest and nothing above it, so a sibling
+  \`../lib\` resolves on the host and is absent in the guest.
+- Keep \`.ps1\` guest scripts ASCII-only: PowerShell 5.1 reads UTF-8 without a
+  BOM as CP1252 and one em dash makes the whole file fail to parse. Run
+  \`vmkit check-scripts\` (no VM needed) before \`vmkit test\`.
 - Never hand-edit or assume \`~/.config/vmkit/host.conf\` state in repo code —
   it's machine-specific and never committed; repo code should only depend on
   \`vmkit.conf\`.
-- One VM runs at a time (vmkit enforces this) — don't add code that boots or
-  reverts VMs outside vmkit's commands.
+- One VM runs at a time, and vmkit enforces it by CLAIMING THE HOST for the
+  duration of every \`test\`/\`series\`/\`run\`/\`reset\`/\`up\`/\`provision\` —
+  don't add code that boots or reverts VMs outside vmkit's commands, and don't
+  add a second locking scheme around them. If a command reports the host is
+  held, something else is genuinely using it; wait or \`vmkit hold --status\`.
 - After changing a flavor script, re-run with \`vmkit test <platform>
   <flavor>\` — vmkit reverts to the \`-built\` snapshot automatically, so
   there's no leftover state between runs.

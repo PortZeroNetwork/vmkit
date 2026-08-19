@@ -24,10 +24,37 @@ fighting an OS limit.
 - MSI custom actions with `Return="ignore"` swallow failures — lifecycle tests
   must assert the *artifacts* (task exists, cert in store, NRPT rule present),
   never trust the installer exit code alone.
+- **Keep `.ps1` guest scripts ASCII-only.** Windows PowerShell 5.1 reads a
+  UTF-8 file with **no BOM** as CP1252, so an em dash (`E2 80 94`) decodes to
+  three characters ending in `U+201D` — a smart quote it honours as a string
+  delimiter. A single one inside a double-quoted message ends the string early,
+  the rest of the file parses as code, and the parse error names a **brace on
+  an unrelated line** whose braces are balanced. Harmless in a `#` comment,
+  fatal in a string; "only in strings" is not a rule anyone applies while
+  writing prose in a comment, so the rule is the whole file.
+  `vmkit check-scripts` enforces it (and `vmkit test` runs it before booting).
 - `| Out-Null` on native commands can hang via pipe inheritance; PowerShell
   `Start-Process -Wait` + explicit log files is safer for installers.
-- Anything that can wedge (msiexec, certutil, service stop) runs under
-  `Invoke-Guarded` (guest-lib/assert.ps1) with a timeout.
+- **`Start-Process -PassThru` without `-Wait` never populates `ExitCode`.** It
+  reads back *empty*, not non-zero, so a phase checking it fails while the
+  command plainly worked. Adding a parameterless `WaitForExit()` afterwards
+  does not fix it. Consequence: you cannot get a per-command timeout **and** a
+  reliable exit code out of `Start-Process` — so don't try. vmkit already owns
+  the timeout (`VMKIT_FLAVOR_<NAME>_TIMEOUT` plus `VMKIT_KILL_WINDOWS` to reap
+  stragglers) and does it better than an in-guest one.
+- **`Write-Output` inside a helper becomes part of its RETURN VALUE.** One
+  diagnostic line turns a wrapper's `$true` into `@("...", $true)`; a `[bool]`
+  parameter then fails to bind, the call throws, and the phase *disappears from
+  the report entirely*. Send every diagnostic to
+  `[Console]::Error.WriteLine(...)`.
+- **`Invoke-Guarded` reports completion, not success.** It runs its block via
+  `Start-Job`, i.e. a separate process, so `$LASTEXITCODE` and any variable the
+  block sets do not cross back and its output is discarded. Use it only for a
+  step that can *wedge* (msiexec, certutil, a service stop) whose success you
+  assert some other way. When the question is "did this command succeed", use
+  **`Invoke-Native`** (guest-lib/assert.ps1) — `Start-Process -Wait -PassThru`
+  with explicit log files, returning `@{ Completed; ExitCode; Out; Err }`, plus
+  `Ran-Ok` for the `[bool]` that `Phase` wants.
 
 ## macOS (headless root)
 
@@ -67,6 +94,20 @@ fighting an OS limit.
 
 ## All guests
 
+- **Only the flavor script's own directory is pushed into the guest.** Anything
+  the script needs at runtime — assertion helpers, fixtures, sub-scripts — must
+  live *inside* that directory. A sibling `../lib` resolves on the host and is
+  absent in the guest. `vmkit init` scaffolds `vmtest/scripts/lib/` with the
+  helpers already in it for exactly this reason; `vmkit check-scripts` warns
+  when a script sources a path above its own directory.
+- **A script that never prints `RESULT=` is a failure, not a pass.** The
+  protocol is `PHASE=<name> ok=true|false|SKIP` lines ending in
+  `RESULT=PASS|FAIL|SKIP`. vmkit reports a missing verdict as `NO-RESULT` (and
+  an empty stream as `NO-OUTPUT`), because a script that stopped part-way
+  proves nothing about the phases it did print. A `RESULT=PASS` followed by a
+  non-zero exit is reported as `FAIL`: everything after the last `PHASE=` line
+  did not happen. Reaching `vmkit_result` / `Vmkit-Result` is itself part of
+  what a leg proves.
 - **Multi-line inline `prlctl exec bash -lc '...'` mangles arguments.** Run
   script FILES (pushed or via the share); pipe scripts to `bash -s` for
   ad-hoc multi-line work.

@@ -9,6 +9,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: bash -n
-        run: bash -n bin/vmkit lib/*.sh
+        run: bash -n bin/vmkit lib/*.sh guest-lib/assert.sh templates/scaffold/smoke.sh tests/run.sh tests/check-ascii.sh tests/fake-bin/prlctl
       - name: shellcheck
         run: shellcheck -S warning bin/vmkit lib/*.sh guest-lib/assert.sh
+      - name: guest-lib is ASCII-only
+        run: ./tests/check-ascii.sh
+
+  selftest:
+    # The verdict gate, the script lint and the host hold, against a fake
+    # prlctl. No Parallels, no guests, ~30s. docs/FAILURES.md #22 is why this
+    # job exists: vmkit reported PASS for a leg in which every assertion was
+    # `command not found`.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: vmkit self-test
+        run: ./tests/run.sh

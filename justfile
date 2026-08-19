@@ -1,9 +1,24 @@
 # vmkit development tasks
 
 # Syntax + lint every shell source.
+#
+# The guest-lib ASCII check is not style. Windows PowerShell 5.1 reads a UTF-8
+# file with no BOM as CP1252, so one em dash in a .ps1 ends a string early and
+# the whole file fails to parse, reporting a brace error on an unrelated line.
+# guest-lib is the directory every consuming repo copies from, so it holds to
+# ASCII across the board rather than to a per-extension rule nobody applies
+# reliably while writing prose in a comment. (docs/FAILURES.md #24.)
 check:
-    bash -n bin/vmkit lib/*.sh
+    bash -n bin/vmkit lib/*.sh guest-lib/assert.sh templates/scaffold/smoke.sh tests/run.sh tests/check-ascii.sh tests/fake-bin/prlctl
     shellcheck -S warning bin/vmkit lib/*.sh guest-lib/assert.sh
+    ./tests/check-ascii.sh
+
+# Run vmkit's self-test (no Parallels, no guests; ~30s).
+test:
+    ./tests/run.sh
+
+# Everything CI runs.
+ci: check test
 
 # Install this checkout so `vmkit` is on PATH.
 #

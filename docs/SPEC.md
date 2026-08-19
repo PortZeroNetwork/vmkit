@@ -42,21 +42,48 @@ terminal line and stops there:
 - On reading a line matching `^RESULT=(PASS|FAIL|SKIP)`, **return immediately**
   with that verdict. Do not wait for EOF. Do not wait for the child.
 - Then terminate the guest-side process tree (best effort) and reap.
-- Exit status is advisory only. `RESULT=` is authoritative when present.
 - Absent any `RESULT=` line, the run FAILS regardless of exit status — with a
-  distinct message when output was empty, because a crashed interpreter still
+  distinct outcome when output was empty, because a crashed interpreter still
   yields exit 0 through `prlctl exec` and that is what silently baked an
-  unprovisioned guest into both a checkpoint and a permanent anchor.
+  unprovisioned guest into both a checkpoint and a permanent anchor. The
+  outcomes are `NO-RESULT` and `NO-OUTPUT`, distinct from `FAIL`: "the script
+  asserted a failure" and "the script never got far enough to say anything"
+  have different first debugging steps.
+
+**Whether a non-zero exit can outrank the sentinel depends on who ended the
+process, and the spec has to say which mechanism is in force.**
+
+An earlier draft of this section said "exit status is advisory only; `RESULT=`
+is authoritative when present", with a test asserting that a script exiting 3
+after `RESULT=PASS` still passes. That is correct **for the sentinel
+supervisor above and only for it**: once vmkit returns at the sentinel and
+kills the process tree itself, the status it collects is an artifact of its own
+kill, not of the script, and reading it would fail every passing run.
+
+It is wrong for the implementation that waits for the process — which is what
+0.4.6 ships and what the Rust port will still do for any step that has not
+adopted the sentinel path. There the status is the script's own, and a non-zero
+one means it did not finish: everything after its last `PHASE=` line —
+teardown, cleanup, a trailing assertion — did not happen. Reporting PASS for
+that is the same class of false green this whole section exists to close.
+
+So: **the sentinel wins only where vmkit ended the process.** Where vmkit
+waited, both signals are read and either one can fail the run.
 
 **Tests**
 | # | Given | Expect |
 |---|---|---|
 | E1 | script prints `RESULT=PASS`, leaks a handle, never exits | returns PASS in < 5s |
-| E2 | script exits 0, prints nothing | FAIL, message names "no output at all" |
-| E3 | script exits 0, prints phases but no `RESULT=` | FAIL, message names the truncation |
+| E2 | script exits 0, prints nothing | FAIL (`NO-OUTPUT`), message names "no output at all" |
+| E3 | script exits 0, prints phases but no `RESULT=` | FAIL (`NO-RESULT`), message names the truncation |
 | E4 | script prints `RESULT=FAIL`, exits 0 | FAIL |
-| E5 | script exits 3, prints `RESULT=PASS` | PASS (sentinel wins) |
+| E5 | script exits 3, prints `RESULT=PASS`, **vmkit waited for it** | FAIL, naming both the verdict and the status |
+| E5b | script prints `RESULT=PASS`, **vmkit ended the process at the sentinel** | PASS (the status is vmkit's own kill) |
 | E6 | script exits 3, prints nothing | FAIL, exit status preserved in the message |
+| E7 | script prints `RESULT=SKIP`, exits 0 | SKIP, reported as itself and not as a pass |
+
+E2–E7 are implemented in bash and asserted by `tests/run.sh` against a fake
+`prlctl`. E1 and E5b need the sentinel supervisor, which is not built.
 
 ## 1.2 Silence watchdog
 
@@ -130,10 +157,22 @@ unterminated string ten lines past the real cause.
 
 **Required behavior.** Before pushing or executing guest code:
 
-- `.ps1` must be UTF-8 **with BOM**, or vmkit adds one in transit.
+- `.ps1` must be **ASCII**. Refuse with the offending line and the CP1252
+  explanation, rather than letting PowerShell report a brace error somewhere
+  blameless.
 - Parse-check with the target interpreter (`Parser::ParseFile`, `bash -n`) and
   refuse with file:line rather than executing a broken script.
 - These checks are vmkit's, so every repo gets them.
+
+**Adding a BOM in transit was the earlier requirement here, and it is now
+rejected.** It works, and it fails badly: a BOM is invisible, an editor or a
+`sed` drops it silently, and the constraint then depends on a byte nobody can
+see — so the file that fails is the one whose BOM went missing, with the same
+misattributed brace error and one more layer to see through. Refusing non-ASCII
+names the real cause at the real line. 0.4.6 ships the ASCII rule for
+`guest-lib/` and `templates/scaffold/` (`tests/check-ascii.sh`, in CI) and for
+a consuming repo's flavor scripts (`vmkit check-scripts`, run automatically by
+`vmkit test` before any VM boots).
 
 ---
 
@@ -229,5 +268,21 @@ invalidation. C4 build fails → **no checkpoint captured, anchor untouched**
 3. **Port core to Rust** against that suite.
 4. **Vmkitfile last** — it is the largest piece and depends on §1 being solid.
 
-Status: 1.3's RAM rules and the `RESULT=PASS` gate for `provision` are already
-in bash (v0.4.3–0.4.5). Everything else in §1 is unimplemented.
+Status (v0.4.6):
+
+- **1.1 — the verdict half is done, the sentinel half is not.** Every guest run
+  now reads both the `RESULT=` line and the exit status (`guest_result_gate`,
+  testing.sh), with `NO-RESULT`/`NO-OUTPUT`/`SETUP-FAILED` as distinct
+  outcomes; `provision` keeps its stricter `RESULT=PASS` gate. What is missing
+  is returning AT the sentinel instead of waiting for EOF, which is the half
+  that fixes the hang.
+- **1.3** — the RAM rules are in bash. The disk check and the hardware
+  assertion are not.
+- **1.5** — the ASCII rule and `bash -n` are in bash and run before a VM boots
+  (`vmkit check-scripts`); PowerShell parse-checking needs a Windows host and
+  is not.
+- **1.2 and 1.4 are unimplemented**, as is §2 in full.
+
+Step 2 of the sequencing above has started: `tests/run.sh` runs the §1.1 cases
+against a fake `prlctl`, with no Parallels and no guests, and is the beginning
+of the frozen suite the port will be written against.

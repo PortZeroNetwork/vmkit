@@ -21,6 +21,7 @@
 #   vmkit hold [reason] [--vm x] [--ttl s]  claim the host (blocks ensure_only)
 #   vmkit hold [--status]            print the current hold, claim nothing
 #   vmkit unhold                     release the hold
+#   vmkit check-scripts [flavor]     parse-check flavor scripts (no VM needed)
 #   vmkit test <platform> [flavor]   reset to built, run the flavor's script
 #   vmkit series <flavor> [platform] all platforms in series + summary
 #   vmkit provision <platform|vm> <script> [opts]  bake one-time guest config
@@ -88,6 +89,7 @@ case "$cmd" in
     ensure-only) vmkit_load_host_conf; ensure_only "$(resolve_vm_arg "$1")" ;;
     hold)        vmkit_load_host_conf; cmd_hold "$@" ;;
     unhold|release) cmd_unhold "$@" ;;
+    check-scripts) vmkit_load_repo_conf; cmd_check_scripts "$@" ;;
     test)        vmkit_load_host_conf; vmkit_load_repo_conf; cmd_test "$@" ;;
     series)      vmkit_load_host_conf; vmkit_load_repo_conf; cmd_series "$@" ;;
     provision)   [ $# -ge 2 ] || { echo "usage: vmkit provision <platform|vm> <script> [--checkpoint name] [--label label] [--preserve-as name] [--no-preserve] [--anchor name] [--timeout secs] [-- args...]" >&2; exit 2; }
@@ -112,7 +114,7 @@ case "$cmd" in
     guest-lib)   echo "$VMKIT_SHARE/guest-lib" ;;
     version|--version) cat "$VMKIT_SHARE/VERSION" 2>/dev/null || echo dev ;;
     *)
-        sed -n '2,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,39p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         exit 2
         ;;
 esac
